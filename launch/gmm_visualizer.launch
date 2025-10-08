@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- GMM Visualizer Node -->
+    <node name="gmm_visualizer" pkg="gmms_exploration" type="gmm_visualizer_node.py" output="screen">
+        <!-- Topic to subscribe to for GMM messages -->
+        <param name="topic_name" value="/starling1/mpa/gmm" />
+        
+        <!-- Visualization parameters -->
+        <param name="visualization_scale" value="2.0" />
+        <param name="marker_lifetime" value="2.0" />
+        <param name="min_alpha" value="0.3" />
+        <param name="max_alpha" value="1.0" />
+    </node>
+    
+    <!-- Optional: Launch RViz with pre-configured settings -->
+    <arg name="rviz" default="false" />
+    <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" 
+          args="-d $(find gmms_exploration)/config/sogmm_rviz.rviz" />
+</launch>

@@ -250,15 +250,11 @@ class OfflineBagProcessor:
             for timestamp in timestamps_10hz:
                 
                 # Find closest point cloud message
-                while (pc_idx < len(point_clouds) - 1 and 
-                       abs((point_clouds[pc_idx + 1][0] - timestamp).to_sec()) < 
-                       abs((point_clouds[pc_idx][0] - timestamp).to_sec())):
+                while (pc_idx < len(point_clouds) - 1 and abs((point_clouds[pc_idx + 1][0] - timestamp).to_sec()) < abs((point_clouds[pc_idx][0] - timestamp).to_sec())):
                     pc_idx += 1
                 
                 # Find closest GMM message
-                while (gmm_idx < len(gmms) - 1 and 
-                       abs((gmms[gmm_idx + 1][0] - timestamp).to_sec()) < 
-                       abs((gmms[gmm_idx][0] - timestamp).to_sec())):
+                while (gmm_idx < len(gmms) - 1 and abs((gmms[gmm_idx + 1][0] - timestamp).to_sec()) < abs((gmms[gmm_idx][0] - timestamp).to_sec())):
                     gmm_idx += 1
                 
                 # Update headers with new timestamp
