@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- SOGMM ROS Node Launch File -->
+
+    <arg name="venv" value="/home/niedzial/gira/gira3d-reconstruction/.venv/bin/python" />
+    
+    <node name="sogmm_node" pkg="gmms_exploration" type="sogmm_ros_node.py" output="screen" launch-prefix = "$(arg venv)">
+        <!-- SOGMM Parameters -->
+        <param name="bandwidth" value="0.02" />
+        <param name="use_intensity" value="false" />
+        <param name="max_components" value="50" />
+        <param name="min_points_per_component" value="100" />
+        <param name="visualization_scale" value="2.0" />
+        <param name="processing_decimation" value="1" />
+        
+        <!-- Remap topics if needed -->
+        <!-- <remap from="/starling1/mpa/tof_pc" to="/your_pointcloud_topic" /> -->
+    </node>
+    
+    <!-- Optional: Launch RViz with custom config -->
+    <arg name="rviz" default="false" />
+    <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find gmms_exploration)/config/sogmm_rviz.rviz" />
+    
+</launch>
