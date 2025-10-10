@@ -35,7 +35,7 @@ class GMMVisualizerNode:
         self.max_alpha = rospy.get_param('~max_alpha', 1.0)
         
         # Publishers
-        self.marker_pub = rospy.Publisher('sogmm_markers', MarkerArray, queue_size=1)
+        self.marker_pub = rospy.Publisher('/starling1/mpa/gmm_markers', MarkerArray, queue_size=1)
         
         # Subscribers
         self.gmm_sub = rospy.Subscriber(self.topic_name, GaussianMixtureModel, 

@@ -40,7 +40,7 @@ class SOGMMROSNode:
         self.enable_visualization = rospy.get_param('~enable_visualization', True)
 
         # Publishers
-        self.marker_pub = rospy.Publisher('/starling1/mpa/gmm', MarkerArray, queue_size=1)
+        self.marker_pub = rospy.Publisher('/starling1/mpa/gmm_markers', MarkerArray, queue_size=1)
         
         # Subscribers
         self.pc_sub = rospy.Subscriber('/starling1/mpa/tof_pc', PointCloud2, 
