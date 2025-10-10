@@ -199,11 +199,12 @@ class OfflineBagProcessor:
         
         with rosbag.Bag(self.input_bag_path, 'r') as input_bag:
             pc_count = 0
+            total_msgs = input_bag.get_message_count(self.pc_topic)
             for topic, msg, t in input_bag.read_messages(topics=[self.pc_topic]):
                 if topic == self.pc_topic:
                     pc_count += 1
-                    print(f"Processing point cloud {pc_count}/141...")
-                    
+                    print(f"Processing point cloud {pc_count}/{total_msgs}...")
+
                     point_clouds.append((t, msg))
                     
                     # Generate GMM for this point cloud
