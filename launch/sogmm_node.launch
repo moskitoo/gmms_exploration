@@ -12,13 +12,14 @@
         <param name="min_points_per_component" value="100" />
         <param name="visualization_scale" value="2.0" />
         <param name="processing_decimation" value="1" />
+        <param name="enable_visualization" value="false" />
         
         <!-- Remap topics if needed -->
         <!-- <remap from="/starling1/mpa/tof_pc" to="/your_pointcloud_topic" /> -->
     </node>
     
     <!-- Optional: Launch RViz with custom config -->
-    <arg name="rviz" default="false" />
+    <arg name="rviz" default="true" />
     <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find gmms_exploration)/config/sogmm_rviz.rviz" />
     
 </launch>

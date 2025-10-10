@@ -37,9 +37,10 @@ class SOGMMROSNode:
         self.min_points_per_component = rospy.get_param('~min_points_per_component', 100) # ?
         self.visualization_scale = rospy.get_param('~visualization_scale', 2.0)
         self.processing_decimation = rospy.get_param('~processing_decimation', 1)  # Process every Nth point
-        
+        self.enable_visualization = rospy.get_param('~enable_visualization', True)
+
         # Publishers
-        self.marker_pub = rospy.Publisher('sogmm_markers', MarkerArray, queue_size=1)
+        self.marker_pub = rospy.Publisher('~sogmm_markers', MarkerArray, queue_size=1)
         
         # Subscribers
         self.pc_sub = rospy.Subscriber('/starling1/mpa/tof_pc', PointCloud2, 
@@ -149,7 +150,8 @@ class SOGMMROSNode:
             
             # Visualize results
             viz_start_time = time.time()
-            self.visualize_gmm(model, msg.header.frame_id, msg.header.stamp)
+            if self.enable_visualization:
+                self.visualize_gmm(model, msg.header.frame_id, msg.header.stamp)
             viz_time = time.time() - viz_start_time
             
             processing_time = time.time() - start_time
