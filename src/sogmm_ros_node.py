@@ -31,8 +31,6 @@ class SOGMMROSNode:
         # Parameters
         self.bandwidth = rospy.get_param('~bandwidth', 0.02)
         self.use_intensity = rospy.get_param('~use_intensity', False)  # ?
-        self.max_components = rospy.get_param('~max_components', 50) # ?
-        self.min_points_per_component = rospy.get_param('~min_points_per_component', 100) # ?
         self.visualization_scale = rospy.get_param('~visualization_scale', 2.0)
         self.processing_decimation = rospy.get_param('~processing_decimation', 1)  # Process every Nth point
         self.enable_visualization = rospy.get_param('~enable_visualization', True)
@@ -47,6 +45,17 @@ class SOGMMROSNode:
         
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+
+        try:
+            self.sogmm = SOGMM(bandwidth=self.bandwidth, compute='GPU')
+
+        except Exception as gpu_error:
+            rospy.logwarn(f"GPU SOGMM not available: {gpu_error}, trying CPU")
+            try:
+                self.sogmm = SOGMM(bandwidth=self.bandwidth, compute='CPU')
+            except Exception as cpu_error:
+                rospy.logerr(f"Both GPU and CPU SOGMM not available: {cpu_error}")
+                return
         
         # Threading for non-blocking processing
         self.processing_lock = threading.Lock()
@@ -56,7 +65,6 @@ class SOGMMROSNode:
         rospy.loginfo("SOGMM ROS Node initialized with parameters:")
         rospy.loginfo(f"  - Bandwidth: {self.bandwidth}")
         rospy.loginfo(f"  - Use intensity: {self.use_intensity}")
-        rospy.loginfo(f"  - Max components: {self.max_components}")
         rospy.loginfo(f"  - Visualization scale: {self.visualization_scale}")
         rospy.loginfo(f"  - Processing decimation: {self.processing_decimation}")
         
@@ -175,14 +183,11 @@ class SOGMMROSNode:
             # Fit SOGMM model
             gmm_start_time = time.time()
             try:
-                sg = SOGMM(bandwidth=self.bandwidth, compute='GPU')
-                model = sg.fit(points_4d)
-
+                model = self.sogmm.fit(points_4d)
             except Exception as gpu_error:
                 rospy.logwarn(f"GPU SOGMM failed: {gpu_error}, trying CPU fallback")
                 try:
-                    sg = SOGMM(bandwidth=self.bandwidth, compute='CPU')
-                    model = sg.fit(points_4d)
+                    model = self.sogmm.fit(points_4d)
                 except Exception as cpu_error:
                     rospy.logerr(f"Both GPU and CPU SOGMM failed: {cpu_error}")
                     return
