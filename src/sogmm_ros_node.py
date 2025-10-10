@@ -6,19 +6,17 @@ This node subscribes to PointCloud2 messages, processes them using SOGMM,
 and publishes visualization markers for RViz.
 """
 
-import rospy
-import ros_numpy
-import numpy as np
-from sensor_msgs.msg import PointCloud2
-from sensor_msgs import point_cloud2
-from visualization_msgs.msg import MarkerArray, Marker
-from geometry_msgs.msg import Point, Vector3, Quaternion
-from std_msgs.msg import ColorRGBA, Header
 import threading
 import time
-from scipy.spatial.transform import Rotation as R
 
+import numpy as np
+import ros_numpy
+import rospy
+import tf2_ros
+from scipy.spatial.transform import Rotation as R
+from sensor_msgs.msg import PointCloud2
 from sogmm_py.sogmm import SOGMM
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 class SOGMMROSNode:
@@ -38,6 +36,7 @@ class SOGMMROSNode:
         self.visualization_scale = rospy.get_param('~visualization_scale', 2.0)
         self.processing_decimation = rospy.get_param('~processing_decimation', 1)  # Process every Nth point
         self.enable_visualization = rospy.get_param('~enable_visualization', True)
+        self.target_frame = rospy.get_param('~target_frame', 'map')
 
         # Publishers
         self.marker_pub = rospy.Publisher('/starling1/mpa/gmm_markers', MarkerArray, queue_size=1)
@@ -46,12 +45,15 @@ class SOGMMROSNode:
         self.pc_sub = rospy.Subscriber('/starling1/mpa/tof_pc', PointCloud2, 
                                        self.pointcloud_callback, queue_size=1)
         
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        
         # Threading for non-blocking processing
         self.processing_lock = threading.Lock()
         self.latest_pointcloud = None
         self.processing_thread = None
         
-        rospy.loginfo(f"SOGMM ROS Node initialized with parameters:")
+        rospy.loginfo("SOGMM ROS Node initialized with parameters:")
         rospy.loginfo(f"  - Bandwidth: {self.bandwidth}")
         rospy.loginfo(f"  - Use intensity: {self.use_intensity}")
         rospy.loginfo(f"  - Max components: {self.max_components}")
@@ -83,29 +85,67 @@ class SOGMMROSNode:
         
         try:
             start_time = time.time()
-            
-            # Convert PointCloud2 to numpy array
-            pc_array = ros_numpy.point_cloud2.pointcloud2_to_array(msg)
 
-            # Extract XYZ coordinates
-            points_3d = np.column_stack([
+
+            # Convert PointCloud2 to numpy array first
+            pc_array = ros_numpy.point_cloud2.pointcloud2_to_array(msg)
+            
+            # Extract XYZ coordinates before transformation
+            points_3d_original = np.column_stack([
                 pc_array['x'].flatten(),
                 pc_array['y'].flatten(),
                 pc_array['z'].flatten()
             ])
             
-            # Remove NaN and infinite values
-            valid_mask = np.isfinite(points_3d).all(axis=1)
-            points_3d = points_3d[valid_mask]
+            # Remove NaN and infinite values before transformation
+            valid_mask = np.isfinite(points_3d_original).all(axis=1)
+            points_3d_original = points_3d_original[valid_mask]
             
-            if len(points_3d) == 0:
+            if len(points_3d_original) == 0:
                 rospy.logwarn("No valid points in point cloud")
                 return
+            
+            try:
+                # Lookup transform from cloud frame to target frame
+                transform = self.tf_buffer.lookup_transform(
+                    self.target_frame,
+                    msg.header.frame_id,
+                    rospy.Time(0),  # get the latest transform
+                    rospy.Duration(1.0)
+                )
+                
+                # Extract transformation parameters
+                translation = np.array([
+                    transform.transform.translation.x,
+                    transform.transform.translation.y,
+                    transform.transform.translation.z
+                ])
+                
+                rotation_quat = [
+                    transform.transform.rotation.x,
+                    transform.transform.rotation.y,
+                    transform.transform.rotation.z,
+                    transform.transform.rotation.w
+                ]
+                
+                # Convert quaternion to rotation matrix
+                rotation_matrix = R.from_quat(rotation_quat).as_matrix()
+                
+                # Apply transformation: R * points + t
+                points_3d = (rotation_matrix @ points_3d_original.T).T + translation
+                
+                rospy.loginfo(f"Successfully transformed point cloud from {msg.header.frame_id} to map frame")
+
+            except Exception as e:
+                rospy.logwarn("Transform failed: %s, using original points" % str(e))
+                points_3d = points_3d_original
             
             # Decimate points for faster processing
             if self.processing_decimation > 1:
                 indices = np.arange(0, len(points_3d), self.processing_decimation)
                 points_3d = points_3d[indices]
+                # Also update the valid_mask for intensity extraction
+                valid_mask = valid_mask[indices] if self.processing_decimation > 1 else valid_mask
             
             rospy.loginfo(f"Processing {len(points_3d)} points")
 
@@ -122,7 +162,8 @@ class SOGMMROSNode:
                     else:
                         intensity = np.ones_like(intensity) * 0.5
                     points_4d = np.column_stack([points_3d, intensity])
-                except:
+                except Exception as e:
+                    rospy.logwarn(f"Failed to extract intensity: {e}, using dummy intensity")
                     # Use dummy intensity if not available
                     intensity = np.ones(len(points_3d)) * 0.5
                     points_4d = np.column_stack([points_3d, intensity])
@@ -151,7 +192,7 @@ class SOGMMROSNode:
             # Visualize results
             viz_start_time = time.time()
             if self.enable_visualization:
-                self.visualize_gmm(model, msg.header.frame_id, msg.header.stamp)
+                self.visualize_gmm(model, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
             
             processing_time = time.time() - start_time
