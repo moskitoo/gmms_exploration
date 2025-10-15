@@ -20,8 +20,18 @@ from sogmm_py.sogmm import SOGMM
 from visualization_msgs.msg import Marker, MarkerArray
 from typing import List
 
-# from scripts.sogmm_hash_table import GMMSpatialHash
-# from sogmm_gpu import SOGMMInference as GPUInference
+from scripts.sogmm_hash_table import GMMSpatialHash
+from sogmm_gpu import SOGMMInference as GPUInference
+
+import sogmm_cpu
+from sogmm_cpu import SOGMMf4Host as CPUContainerf4
+from sogmm_cpu import SOGMMf3Host as CPUContainerf3
+
+import sogmm_gpu
+from sogmm_gpu import SOGMMf4Device as GPUContainerf4
+from sogmm_gpu import SOGMMf3Device as GPUContainerf3
+from sogmm_gpu import SOGMMLearner as GPUFit
+from sogmm_gpu import SOGMMInference as GPUInference
 
 
 class SOGMMROSNode:
@@ -53,10 +63,10 @@ class SOGMMROSNode:
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         
         self.sogmm = None
-        # self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
+        self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
         self.l_thres = 3.0
         self.novel_pts_placeholder = None
-        # self.inference = GPUInference()
+        self.inference = GPUInference()
 
         # Threading for non-blocking processing
         self.processing_lock = threading.Lock()
@@ -197,7 +207,7 @@ class SOGMMROSNode:
                     
                 model = self.sogmm.fit(points_4d)
                     
-                # self.gsh.add_points(model.means_, np.arange(0, model.n_components_, dtype=int))
+                self.gsh.add_points(model.means_, np.arange(0, model.n_components_, dtype=int))
             else:
 
                 model = self.sogmm.fit(points_4d)
