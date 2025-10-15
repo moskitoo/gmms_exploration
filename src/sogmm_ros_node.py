@@ -6,6 +6,7 @@ This node subscribes to PointCloud2 messages, processes them using SOGMM,
 and publishes visualization markers for RViz.
 """
 
+import copy
 import threading
 import time
 
@@ -17,6 +18,10 @@ from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import PointCloud2
 from sogmm_py.sogmm import SOGMM
 from visualization_msgs.msg import Marker, MarkerArray
+from typing import List
+
+from scripts.sogmm_hash_table import GMMSpatialHash
+from sogmm_gpu import SOGMMInference as GPUInference
 
 
 class SOGMMROSNode:
@@ -35,6 +40,7 @@ class SOGMMROSNode:
         self.processing_decimation = rospy.get_param('~processing_decimation', 1)  # Process every Nth point
         self.enable_visualization = rospy.get_param('~enable_visualization', True)
         self.target_frame = rospy.get_param('~target_frame', 'map')
+        self.min_novel_points = rospy.get_param('~min_novel_points', 3500)
 
         # Publishers
         self.marker_pub = rospy.Publisher('/starling1/mpa/gmm_markers', MarkerArray, queue_size=1)
@@ -45,18 +51,13 @@ class SOGMMROSNode:
         
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
-
-        try:
-            self.sogmm = SOGMM(bandwidth=self.bandwidth, compute='GPU')
-
-        except Exception as gpu_error:
-            rospy.logwarn(f"GPU SOGMM not available: {gpu_error}, trying CPU")
-            try:
-                self.sogmm = SOGMM(bandwidth=self.bandwidth, compute='CPU')
-            except Exception as cpu_error:
-                rospy.logerr(f"Both GPU and CPU SOGMM not available: {cpu_error}")
-                return
         
+        self.sogmm = None
+        self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
+        self.l_thres = 3.0
+        self.novel_pts_placeholder = None
+        self.inference = GPUInference()
+
         # Threading for non-blocking processing
         self.processing_lock = threading.Lock()
         self.latest_pointcloud = None
@@ -182,15 +183,47 @@ class SOGMMROSNode:
 
             # Fit SOGMM model
             gmm_start_time = time.time()
-            try:
-                model = self.sogmm.fit(points_4d)
-            except Exception as gpu_error:
-                rospy.logwarn(f"GPU SOGMM failed: {gpu_error}, trying CPU fallback")
+            
+            if self.sogmm is None:
                 try:
-                    model = self.sogmm.fit(points_4d)
-                except Exception as cpu_error:
-                    rospy.logerr(f"Both GPU and CPU SOGMM failed: {cpu_error}")
-                    return
+                    self.sogmm = SOGMM(bandwidth=self.bandwidth, compute='GPU')
+                except Exception as gpu_error:
+                    rospy.logwarn(f"GPU SOGMM not available: {gpu_error}, trying CPU")
+                    try:
+                        self.sogmm = SOGMM(bandwidth=self.bandwidth, compute='CPU')
+                    except Exception as cpu_error:
+                        rospy.logerr(f"Both GPU and CPU SOGMM not available: {cpu_error}")
+                        return
+                    
+                model = self.sogmm.fit(points_4d)
+                    
+                self.gsh.add_points(model.means_, np.arange(0, model.n_components_, dtype=int))
+            else:
+
+                fov_comp_indices = self.gsh.find_points(points_4d)
+                novel_pts = None
+                if len(fov_comp_indices) > 1:
+                    novel_pts = self.extract_novel(model, points_4d, fov_comp_indices)
+                else:
+                    novel_pts = points_4d
+
+                # process novel points
+                if self.novel_pts_placeholder is None:
+                    self.novel_pts_placeholder = copy.deepcopy(novel_pts)
+                else:
+                    self.novel_pts_placeholder = np.concatenate(
+                        (self.novel_pts_placeholder, novel_pts), axis=0)
+
+                if self.novel_pts_placeholder.shape[0] >= self.min_novel_points: # ?
+                    old_n_components = model.n_components_
+
+                    model = self.sogmm.fit(self.novel_pts_placeholder)
+
+                    new_n_components = model.n_components_
+
+                    self.gsh.add_points(model.means_, np.arange(old_n_components, new_n_components, dtype=int))
+
+                    self.novel_pts_placeholder = None
             
             gmm_time = time.time() - gmm_start_time
             
@@ -205,6 +238,88 @@ class SOGMMROSNode:
             
         except Exception as e:
             rospy.logerr(f"Error processing point cloud: {str(e)}")
+
+    def extract_novel(self, model, pcld, comp_indices):
+        # create a GMM submap using component indices
+        # submap = model.submap_from_indices(list(comp_indices))
+        submap = self.submap_from_indices(model, list(comp_indices))
+
+        # perform likelihood score computation on the GPU
+        scores = self.inference.score_3d(pcld[:, :3], submap)
+
+        # filter the point cloud and return novel points
+        scores = scores.flatten()
+        return pcld[scores < self.l_thres, :]
+
+    # SOGMM submapFromIndices(const std::vector<size_t> &indices)
+    #   {
+    #     unsigned int support_size = 0;
+    #     for (size_t i = 0; i < indices.size(); i++)
+    #     {
+    #       support_size += support_size_ * weights_(indices[i]);
+    #     }
+
+    #     if (support_size <= 1)
+    #     {
+    #       return SOGMM();
+    #     }
+    #     else
+    #     {
+    #       return SOGMM(weights_(indices), means_(indices, Eigen::all), covariances_(indices, Eigen::all),
+    #                    support_size);
+    #     }
+    #   }
+    # 
+
+    # Vector score3D(const MatrixXD<3> &X, const Container<4> &sogmm)
+    #   {
+    #     // Extract the (x, y, z) part from SOGMM
+    #     Container<3> sogmm3 = extractXpart(sogmm);
+
+    #     return EM<T, 3>::scoreSamples(X, sogmm3);
+    #   }
+
+    # template <typename T>
+    # SOGMM<T, 3> extractXpart(const SOGMM<T, 4> &input)
+    # {
+    #   SOGMM<T, 3> sogmm3 = SOGMM<T, 3>(input.n_components_);
+
+    #   sogmm3.weights_ = input.weights_;
+    #   sogmm3.means_ = input.means_(Eigen::all, {0, 1, 2});
+
+    #   using Matrix3 = typename SOGMM<T, 3>::MatrixDD;
+    #   using Matrix4 = typename SOGMM<T, 4>::MatrixDD;
+    #   using VectorC3 = typename SOGMM<T, 3>::VectorC;
+    #   using VectorC4 = typename SOGMM<T, 4>::VectorC;
+    #   Matrix3 temp_mat3 = Matrix3::Zero(3, 3);
+    #   Matrix4 temp_mat4 = Matrix4::Zero(4, 4);
+    #   VectorC4 c = VectorC4::Zero(16, 1);
+    #   for (size_t k = 0; k < sogmm3.n_components_; k++)
+    #   {
+    #     // copy covariance
+    #     c = input.covariances_.row(k);
+    #     temp_mat4 = Eigen::Map<Matrix4>(c.data(), 4, 4);
+    #     temp_mat3 = temp_mat4({0, 1, 2}, {0, 1, 2});
+    #     sogmm3.covariances_.row(k) = Eigen::Map<VectorC3>(temp_mat3.data(), temp_mat3.size());
+    #   }
+
+    #   sogmm3.updateCholesky(sogmm3.covariances_);
+
+    #   return sogmm3;
+    # }
+    
+    # static Vector scoreSamples(const MatrixXD &X, const Container &sogmm)
+    #   {
+    #     Matrix scores = Matrix::Zero(X.rows(), sogmm.n_components_);
+    #     estimateWeightedLogProb(X, sogmm, scores);
+    #     return logSumExpCols(scores);
+    #   }
+
+    def submap_from_indices(self, model, indices: List[int]) -> SOGMM:    
+        weights = model.weights_[indices]
+        means = model.means_[indices, :]
+        covariances = model.covariances_[indices, :]
+        return SOGMM(weights, means, covariances)
 
     def visualize_gmm(self, model, frame_id, timestamp):
         """
