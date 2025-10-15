@@ -20,8 +20,8 @@ from sogmm_py.sogmm import SOGMM
 from visualization_msgs.msg import Marker, MarkerArray
 from typing import List
 
-from scripts.sogmm_hash_table import GMMSpatialHash
-from sogmm_gpu import SOGMMInference as GPUInference
+# from scripts.sogmm_hash_table import GMMSpatialHash
+# from sogmm_gpu import SOGMMInference as GPUInference
 
 
 class SOGMMROSNode:
@@ -53,10 +53,10 @@ class SOGMMROSNode:
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         
         self.sogmm = None
-        self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
+        # self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
         self.l_thres = 3.0
         self.novel_pts_placeholder = None
-        self.inference = GPUInference()
+        # self.inference = GPUInference()
 
         # Threading for non-blocking processing
         self.processing_lock = threading.Lock()
@@ -197,33 +197,35 @@ class SOGMMROSNode:
                     
                 model = self.sogmm.fit(points_4d)
                     
-                self.gsh.add_points(model.means_, np.arange(0, model.n_components_, dtype=int))
+                # self.gsh.add_points(model.means_, np.arange(0, model.n_components_, dtype=int))
             else:
 
-                fov_comp_indices = self.gsh.find_points(points_4d)
-                novel_pts = None
-                if len(fov_comp_indices) > 1:
-                    novel_pts = self.extract_novel(model, points_4d, fov_comp_indices)
-                else:
-                    novel_pts = points_4d
+                model = self.sogmm.fit(points_4d)
+
+                # fov_comp_indices = self.gsh.find_points(points_4d)
+                # novel_pts = None
+                # if len(fov_comp_indices) > 1:
+                #     novel_pts = self.extract_novel(model, points_4d, fov_comp_indices)
+                # else:
+                #     novel_pts = points_4d
 
                 # process novel points
-                if self.novel_pts_placeholder is None:
-                    self.novel_pts_placeholder = copy.deepcopy(novel_pts)
-                else:
-                    self.novel_pts_placeholder = np.concatenate(
-                        (self.novel_pts_placeholder, novel_pts), axis=0)
+                # if self.novel_pts_placeholder is None:
+                #     self.novel_pts_placeholder = copy.deepcopy(novel_pts)
+                # else:
+                #     self.novel_pts_placeholder = np.concatenate(
+                #         (self.novel_pts_placeholder, novel_pts), axis=0)
 
-                if self.novel_pts_placeholder.shape[0] >= self.min_novel_points: # ?
-                    old_n_components = model.n_components_
+                # if self.novel_pts_placeholder.shape[0] >= self.min_novel_points: # ?
+                #     old_n_components = model.n_components_
 
-                    model = self.sogmm.fit(self.novel_pts_placeholder)
+                #     model = self.sogmm.fit(self.novel_pts_placeholder)
 
-                    new_n_components = model.n_components_
+                #     new_n_components = model.n_components_
 
-                    self.gsh.add_points(model.means_, np.arange(old_n_components, new_n_components, dtype=int))
+                #     # self.gsh.add_points(model.means_, np.arange(old_n_components, new_n_components, dtype=int))
 
-                    self.novel_pts_placeholder = None
+                #     self.novel_pts_placeholder = None
             
             gmm_time = time.time() - gmm_start_time
             
