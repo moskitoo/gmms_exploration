@@ -10,12 +10,10 @@ as the SOGMM processing node.
 import rospy
 import numpy as np
 from visualization_msgs.msg import MarkerArray, Marker
-from geometry_msgs.msg import Point, Vector3, Quaternion
-from std_msgs.msg import ColorRGBA, Header
 from scipy.spatial.transform import Rotation as R
 
 # Import custom messages
-from gmms_exploration.msg import GaussianMixtureModel, GaussianComponent
+from gmms_exploration.msg import GaussianMixtureModel
 
 
 class GMMVisualizerNode:
@@ -44,7 +42,7 @@ class GMMVisualizerNode:
         # Keep track of last marker count for cleanup
         self.last_marker_count = 0
         
-        rospy.loginfo(f"GMM Visualizer Node initialized with parameters:")
+        rospy.loginfo("GMM Visualizer Node initialized with parameters:")
         rospy.loginfo(f"  - Topic: {self.topic_name}")
         rospy.loginfo(f"  - Visualization scale: {self.visualization_scale}")
         rospy.loginfo(f"  - Marker lifetime: {self.marker_lifetime}s")
