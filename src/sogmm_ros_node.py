@@ -113,21 +113,21 @@ class SOGMMROSNode:
             # Fit SOGMM model
             gmm_start_time = time.time()
 
-            this_model_gpu = None
+            model_gpu = None
 
             if self.cpu_model is None:
-                this_model_gpu = GPUContainerf4()
-                self.learner.fit(self.extract_ms_data(pcld), pcld, this_model_gpu)
+                model_gpu = GPUContainerf4()
+                self.learner.fit(self.extract_ms_data(pcld), pcld, model_gpu)
 
-                this_model_cpu = CPUContainerf4(this_model_gpu.n_components_)
-                this_model_gpu.to_host(this_model_cpu)
+                model_cpu = CPUContainerf4(model_gpu.n_components_)
+                model_gpu.to_host(model_cpu)
 
                 self.gsh.add_points(
-                    this_model_cpu.means_,
-                    np.arange(0, this_model_cpu.n_components_, dtype=int),
+                    model_cpu.means_,
+                    np.arange(0, model_cpu.n_components_, dtype=int),
                 )
 
-                self.cpu_model = copy.deepcopy(this_model_cpu)
+                self.cpu_model = copy.deepcopy(model_cpu)
 
             else:
                 fov_comp_indices = self.gsh.find_points(pcld)
@@ -159,21 +159,21 @@ class SOGMMROSNode:
                 if 1 == 1:
                     old_n_components = self.cpu_model.n_components_
 
-                    this_model_gpu = GPUContainerf4()
+                    model_gpu = GPUContainerf4()
                     self.learner.fit(
                         self.extract_ms_data(self.novel_pts_placeholder),
                         self.novel_pts_placeholder,
-                        this_model_gpu,
+                        model_gpu,
                     )
-                    this_model_cpu = CPUContainerf4(this_model_gpu.n_components_)
-                    this_model_gpu.to_host(this_model_cpu)
+                    model_cpu = CPUContainerf4(model_gpu.n_components_)
+                    model_gpu.to_host(model_cpu)
 
-                    self.cpu_model.merge(this_model_cpu)
+                    self.cpu_model.merge(model_cpu)
 
                     new_n_components = self.cpu_model.n_components_
 
                     self.gsh.add_points(
-                        this_model_cpu.means_,
+                        model_cpu.means_,
                         np.arange(old_n_components, new_n_components, dtype=int),
                     )
 
@@ -183,13 +183,13 @@ class SOGMMROSNode:
 
             # Visualize results - only if we have a model
             viz_start_time = time.time()
-            if self.enable_visualization and this_model_gpu is not None:
-                self.visualize_gmm(this_model_gpu, self.target_frame, msg.header.stamp)
+            if self.enable_visualization and model_cpu is not None:
+                self.visualize_gmm(model_cpu, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
             processing_time = time.time() - start_time
             n_components = (
-                this_model_gpu.n_components_ if this_model_gpu is not None else 0
+                model_cpu.n_components_ if model_cpu is not None else 0
             )
             rospy.loginfo(
                 f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GMM: {gmm_time:.3f}s, Viz: {viz_time:.3f}s)"
