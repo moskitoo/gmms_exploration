@@ -16,6 +16,7 @@ import rospy
 import tf2_ros
 from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import Int32
 from sogmm_py.sogmm import SOGMM
 from visualization_msgs.msg import Marker, MarkerArray
 from typing import List
@@ -49,11 +50,15 @@ class SOGMMROSNode:
         self.processing_decimation = rospy.get_param("~processing_decimation", 1)
         self.enable_visualization = rospy.get_param("~enable_visualization", True)
         self.target_frame = rospy.get_param("~target_frame", "map")
-        self.min_novel_points = rospy.get_param("~min_novel_points", 3500)
+        self.min_novel_points = rospy.get_param("~min_novel_points", 500)
 
         # Publishers
         self.marker_pub = rospy.Publisher(
             "/starling1/mpa/gmm_markers", MarkerArray, queue_size=1
+        )
+
+        self.gmm_size_pub = rospy.Publisher(
+            "/starling1/mpa/gmm_size", Int32, queue_size=1
         )
 
         # Subscribers
@@ -66,9 +71,9 @@ class SOGMMROSNode:
 
         self.sogmm = None
         self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
-        self.l_thres = 3.0
+        self.l_thres = 0.05
         self.novel_pts_placeholder = None
-        self.cpu_model = None
+        self.global_model_cpu = None
         self.learner = GPUFit(self.bandwidth)
         self.inference = GPUInference()
 
@@ -115,19 +120,19 @@ class SOGMMROSNode:
 
             model_gpu = None
 
-            if self.cpu_model is None:
+            if self.global_model_cpu is None:
                 model_gpu = GPUContainerf4()
                 self.learner.fit(self.extract_ms_data(pcld), pcld, model_gpu)
 
-                model_cpu = CPUContainerf4(model_gpu.n_components_)
-                model_gpu.to_host(model_cpu)
+                local_model_cpu = CPUContainerf4(model_gpu.n_components_)
+                model_gpu.to_host(local_model_cpu)
 
                 self.gsh.add_points(
-                    model_cpu.means_,
-                    np.arange(0, model_cpu.n_components_, dtype=int),
+                    local_model_cpu.means_,
+                    np.arange(0, local_model_cpu.n_components_, dtype=int),
                 )
 
-                self.cpu_model = copy.deepcopy(model_cpu)
+                self.global_model_cpu = copy.deepcopy(local_model_cpu)
 
             else:
                 fov_comp_indices = self.gsh.find_points(pcld)
@@ -135,10 +140,11 @@ class SOGMMROSNode:
                 novel_pts = None
                 if len(fov_comp_indices) > 1:
                     novel_pts = self.extract_novel(
-                        self.cpu_model, pcld, fov_comp_indices
+                        self.global_model_cpu, pcld, fov_comp_indices
                     )
                 else:
                     novel_pts = pcld
+                # novel_pts = pcld
 
                 # process novel points
                 if self.novel_pts_placeholder is None:
@@ -151,13 +157,17 @@ class SOGMMROSNode:
                 rospy.loginfo(
                     f"Identified {len(novel_pts)} novel points, total buffered: {self.novel_pts_placeholder.shape[0]}"
                 )
+                # rospy.loginfo(
+                #     f"points needed: {(int)((640 / self.processing_decimation) * (480 / self.processing_decimation))}"
+                # )
                 rospy.loginfo(
-                    f"points needed: {(int)((640 / self.processing_decimation) * (480 / self.processing_decimation))}"
+                    f"points needed: {self.min_novel_points}"
                 )
 
-                # if self.novel_pts_placeholder.shape[0] >= self.min_novel_points:
-                if 1 == 1:
-                    old_n_components = self.cpu_model.n_components_
+                if self.novel_pts_placeholder.shape[0] >= self.min_novel_points:
+                # if 1 == 1:
+                    rospy.loginfo("Full buffer")
+                    old_n_components = self.global_model_cpu.n_components_
 
                     model_gpu = GPUContainerf4()
                     self.learner.fit(
@@ -165,15 +175,15 @@ class SOGMMROSNode:
                         self.novel_pts_placeholder,
                         model_gpu,
                     )
-                    model_cpu = CPUContainerf4(model_gpu.n_components_)
-                    model_gpu.to_host(model_cpu)
+                    local_model_cpu = CPUContainerf4(model_gpu.n_components_)
+                    model_gpu.to_host(local_model_cpu)
 
-                    self.cpu_model.merge(model_cpu)
+                    self.global_model_cpu.merge(local_model_cpu)
 
-                    new_n_components = self.cpu_model.n_components_
+                    new_n_components = self.global_model_cpu.n_components_
 
                     self.gsh.add_points(
-                        model_cpu.means_,
+                        local_model_cpu.means_,
                         np.arange(old_n_components, new_n_components, dtype=int),
                     )
 
@@ -183,17 +193,22 @@ class SOGMMROSNode:
 
             # Visualize results - only if we have a model
             viz_start_time = time.time()
-            if self.enable_visualization and model_cpu is not None:
-                self.visualize_gmm(model_cpu, self.target_frame, msg.header.stamp)
+            if self.enable_visualization and self.global_model_cpu is not None:
+                self.visualize_gmm(self.global_model_cpu, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
             processing_time = time.time() - start_time
             n_components = (
-                model_cpu.n_components_ if model_cpu is not None else 0
+                self.global_model_cpu.n_components_ if self.global_model_cpu is not None else 0
             )
             rospy.loginfo(
                 f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GMM: {gmm_time:.3f}s, Viz: {viz_time:.3f}s)"
             )
+
+            gmm_stats_msg = Int32()
+            gmm_stats_msg.data = n_components
+
+            self.gmm_size_pub.publish(gmm_stats_msg)
 
         except Exception as e:
             rospy.logerr(f"Error processing point cloud: {str(e)}")
