@@ -122,19 +122,14 @@ class SOGMMROSNode:
             # Fit SOGMM model
             gmm_start_time = time.time()
 
-            model_gpu = None
+            local_model_gpu = None
 
             if self.global_model_cpu is None:
-                model_gpu = GPUContainerf4()
-                self.learner.fit(self.extract_ms_data(pcld), pcld, model_gpu)
+                local_model_gpu = GPUContainerf4()
+                self.learner.fit(self.extract_ms_data(pcld), pcld, local_model_gpu)
 
-                local_model_cpu = CPUContainerf4(model_gpu.n_components_)
-                model_gpu.to_host(local_model_cpu)
-
-                # self.gsh.add_points(
-                #     local_model_cpu.means_,
-                #     np.arange(0, local_model_cpu.n_components_, dtype=int),
-                # )
+                local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
+                local_model_gpu.to_host(local_model_cpu)
 
                 # Add new components to the R-tree
                 for i in range(local_model_cpu.n_components_):
@@ -152,62 +147,34 @@ class SOGMMROSNode:
                 max_bounds = pcld[:, :3].max(axis=0)
                 fov_comp_indices = list(self.rtree.intersection((*min_bounds, *max_bounds)))
 
-                novel_pts = None
-                if len(fov_comp_indices) > 1:
-                    novel_pts = self.extract_novel(
-                        self.global_model_cpu, pcld, fov_comp_indices
-                    )
-                else:
-                    novel_pts = pcld
-                # novel_pts = pcld
+                submap = self.global_model_cpu.submap_from_indices(list(fov_comp_indices))
 
-                # process novel points
-                if self.novel_pts_placeholder is None:
-                    self.novel_pts_placeholder = copy.deepcopy(novel_pts)
-                else:
-                    self.novel_pts_placeholder = np.concatenate(
-                        (self.novel_pts_placeholder, novel_pts), axis=0
-                    )
+                # take it to the GPU
+                submap_gpu = GPUContainerf4(submap.n_components_)
+                submap_gpu.from_host(submap)
 
-                rospy.loginfo(
-                    f"Identified {len(novel_pts)} novel points, total buffered: {self.novel_pts_placeholder.shape[0]}"
-                )
-                # rospy.loginfo(
-                #     f"points needed: {(int)((640 / self.processing_decimation) * (480 / self.processing_decimation))}"
+                old_n_components = self.global_model_cpu.n_components_
+
+                local_model_gpu = GPUContainerf4()
+                self.learner.fit(self.extract_ms_data(pcld), pcld, local_model_gpu)
+                local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
+                local_model_gpu.to_host(local_model_cpu)
+
+                
+
+                self.global_model_cpu.merge(local_model_cpu)
+
+                new_n_components = self.global_model_cpu.n_components_
+
+                # self.gsh.add_points(
+                #     local_model_cpu.means_,
+                #     np.arange(old_n_components, new_n_components, dtype=int),
                 # )
-                rospy.loginfo(
-                    f"points needed: {self.min_novel_points}"
-                )
-
-                if self.novel_pts_placeholder.shape[0] >= self.min_novel_points:
-                # if 1 == 1:
-                    rospy.loginfo("Full buffer")
-                    old_n_components = self.global_model_cpu.n_components_
-
-                    model_gpu = GPUContainerf4()
-                    self.learner.fit(
-                        self.extract_ms_data(self.novel_pts_placeholder),
-                        self.novel_pts_placeholder,
-                        model_gpu,
-                    )
-                    local_model_cpu = CPUContainerf4(model_gpu.n_components_)
-                    model_gpu.to_host(local_model_cpu)
-
-                    self.global_model_cpu.merge(local_model_cpu)
-
-                    new_n_components = self.global_model_cpu.n_components_
-
-                    # self.gsh.add_points(
-                    #     local_model_cpu.means_,
-                    #     np.arange(old_n_components, new_n_components, dtype=int),
-                    # )
-                    # Add new components to the R-tree
-                    for i in range(local_model_cpu.n_components_):
-                        idx = old_n_components + i
-                        mean = local_model_cpu.means_[i, :3]
-                        self.rtree.insert(idx, (*mean, *mean))
-
-                    self.novel_pts_placeholder = None
+                # Add new components to the R-tree
+                for i in range(local_model_cpu.n_components_):
+                    idx = old_n_components + i
+                    mean = local_model_cpu.means_[i, :3]
+                    self.rtree.insert(idx, (*mean, *mean))
 
             gmm_time = time.time() - gmm_start_time
 
