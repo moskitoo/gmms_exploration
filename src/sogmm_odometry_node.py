@@ -52,72 +52,73 @@ class SOGMMOdomNode:
         # TF2 broadcaster for transforms
         self.br = tf2_ros.TransformBroadcaster()
 
-        # Threading for non-blocking processing
+        # Track last published timestamp to avoid duplicates
+        self.last_published_time = rospy.Time(0)
         self.processing_lock = threading.Lock()
-        self.latest_pose = None
-        self.processing_thread = None
 
         rospy.loginfo("SOGMM Odom Node initialized with frames: map=%s, odom=%s, tof=%s", 
                      self.map_frame, self.odom_frame, self.tof_frame)
 
     def mavros_pose_callback(self, msg):
         """
-        Callback for PoseStamped messages
+        Callback for PoseStamped messages - process directly without threading
         """
         rospy.logdebug("Received pose message from MAVROS")
-        with self.processing_lock:
-            self.latest_pose = msg
+        
+        # Process pose directly in callback to avoid threading issues
+        self.process_pose(msg)
 
-        # Start processing in separate thread if not already running
-        if self.processing_thread is None or not self.processing_thread.is_alive():
-            self.processing_thread = threading.Thread(target=self.process_pose)
-            self.processing_thread.daemon = True
-            self.processing_thread.start()
-
-    def process_pose(self):
+    def process_pose(self, msg):
         """
-        Process the latest pose and publish odometry with tf transforms
+        Process the pose and publish odometry with tf transforms
         """
         with self.processing_lock:
-            if self.latest_pose is None:
-                return
-            msg = self.latest_pose
-            self.latest_pose = None
+            try:
+                rospy.logdebug(
+                    f"Received Pose: Position({msg.pose.position.x}, {msg.pose.position.y}, {msg.pose.position.z})"
+                )
+                rospy.logdebug(
+                    f"Received Pose: Orientation({msg.pose.orientation.x}, {msg.pose.orientation.y}, {msg.pose.orientation.z}, {msg.pose.orientation.w})"
+                )
+                
+                # Use the original message timestamp if available, otherwise current time
+                if msg.header.stamp.to_sec() > 0:
+                    current_time = msg.header.stamp
+                else:
+                    current_time = rospy.Time.now()
+                
+                # Skip if we already published for this timestamp
+                if current_time <= self.last_published_time:
+                    rospy.logdebug(f"Skipping duplicate timestamp: {current_time.to_sec()}")
+                    return
+                
+                # Convert Pose to Odometry message
+                odom_msg = Odometry()
+                odom_msg.header.stamp = current_time
+                odom_msg.header.frame_id = self.odom_frame  # Parent frame
+                odom_msg.child_frame_id = self.tof_frame    # Child frame
+                odom_msg.pose.pose = msg.pose
+                
+                # Since this is ideal odometry, we can set covariance to very small values
+                # Position covariance (x, y, z, roll, pitch, yaw) - 6x6 matrix flattened
+                odom_msg.pose.covariance = [0.001, 0, 0, 0, 0, 0,  # x
+                                           0, 0.001, 0, 0, 0, 0,    # y  
+                                           0, 0, 0.001, 0, 0, 0,    # z
+                                           0, 0, 0, 0.001, 0, 0,    # roll
+                                           0, 0, 0, 0, 0.001, 0,    # pitch
+                                           0, 0, 0, 0, 0, 0.001]    # yaw
 
-        try:
-            rospy.logdebug(
-                f"Received Pose: Position({msg.pose.position.x}, {msg.pose.position.y}, {msg.pose.position.z})"
-            )
-            rospy.logdebug(
-                f"Received Pose: Orientation({msg.pose.orientation.x}, {msg.pose.orientation.y}, {msg.pose.orientation.z}, {msg.pose.orientation.w})"
-            )
-            
-            current_time = rospy.Time.now()
-            
-            # Convert Pose to Odometry message
-            odom_msg = Odometry()
-            odom_msg.header.stamp = current_time
-            odom_msg.header.frame_id = self.odom_frame  # Parent frame
-            odom_msg.child_frame_id = self.tof_frame    # Child frame
-            odom_msg.pose.pose = msg.pose
-            
-            # Since this is ideal odometry, we can set covariance to very small values
-            # Position covariance (x, y, z, roll, pitch, yaw) - 6x6 matrix flattened
-            odom_msg.pose.covariance = [0.001, 0, 0, 0, 0, 0,  # x
-                                       0, 0.001, 0, 0, 0, 0,    # y  
-                                       0, 0, 0.001, 0, 0, 0,    # z
-                                       0, 0, 0, 0.001, 0, 0,    # roll
-                                       0, 0, 0, 0, 0.001, 0,    # pitch
-                                       0, 0, 0, 0, 0, 0.001]    # yaw
+                # Publish Odometry message
+                self.odom_pub.publish(odom_msg)
+                
+                # Publish TF transforms
+                self.publish_transforms(msg.pose, current_time)
+                
+                # Update last published timestamp
+                self.last_published_time = current_time
 
-            # Publish Odometry message
-            self.odom_pub.publish(odom_msg)
-            
-            # Publish TF transforms
-            self.publish_transforms(msg.pose, current_time)
-
-        except Exception as e:
-            rospy.logerr(f"Error processing pose: {str(e)}")
+            except Exception as e:
+                rospy.logerr(f"Error processing pose: {str(e)}")
     
     def publish_transforms(self, pose, timestamp):
         """
