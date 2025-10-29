@@ -9,30 +9,27 @@ and publishes visualization markers for RViz.
 import copy
 import threading
 import time
+from typing import List
 
 import numpy as np
 import ros_numpy
 import rospy
-import tf2_ros
-from scipy.spatial.transform import Rotation as R
-from sensor_msgs.msg import PointCloud2
-from std_msgs.msg import Int32
-from sogmm_py.sogmm import SOGMM
-from visualization_msgs.msg import Marker, MarkerArray
-from typing import List
-
-from scripts.sogmm_hash_table import GMMSpatialHash
-from sogmm_gpu import SOGMMInference as GPUInference
-
 import sogmm_cpu
-from sogmm_cpu import SOGMMf4Host as CPUContainerf4
-from sogmm_cpu import SOGMMf3Host as CPUContainerf3
-
 import sogmm_gpu
-from sogmm_gpu import SOGMMf4Device as GPUContainerf4
+import tf2_ros
+from rtree import index
+from scipy.spatial.transform import Rotation as R
+from scripts.sogmm_hash_table import GMMSpatialHash
+from sensor_msgs.msg import PointCloud2
+from sogmm_cpu import SOGMMf3Host as CPUContainerf3
+from sogmm_cpu import SOGMMf4Host as CPUContainerf4
 from sogmm_gpu import SOGMMf3Device as GPUContainerf3
-from sogmm_gpu import SOGMMLearner as GPUFit
+from sogmm_gpu import SOGMMf4Device as GPUContainerf4
 from sogmm_gpu import SOGMMInference as GPUInference
+from sogmm_gpu import SOGMMLearner as GPUFit
+from sogmm_py.sogmm import SOGMM
+from std_msgs.msg import Int32
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 class SOGMMROSNode:
@@ -69,8 +66,15 @@ class SOGMMROSNode:
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        self.sogmm = None
-        self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
+        # self.sogmm = None
+        # self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
+
+        # R-tree properties for 3D data
+        p = index.Property()
+        p.dimension = 3
+        # The 'id' is the GMM component index, 'object' can be used if needed
+
+        self.rtree = index.Index(properties=p)
         self.l_thres = 0.05
         self.novel_pts_placeholder = None
         self.global_model_cpu = None
@@ -127,15 +131,26 @@ class SOGMMROSNode:
                 local_model_cpu = CPUContainerf4(model_gpu.n_components_)
                 model_gpu.to_host(local_model_cpu)
 
-                self.gsh.add_points(
-                    local_model_cpu.means_,
-                    np.arange(0, local_model_cpu.n_components_, dtype=int),
-                )
+                # self.gsh.add_points(
+                #     local_model_cpu.means_,
+                #     np.arange(0, local_model_cpu.n_components_, dtype=int),
+                # )
+
+                # Add new components to the R-tree
+                for i in range(local_model_cpu.n_components_):
+                    mean = local_model_cpu.means_[i, :3]
+                    # R-tree stores (min_x, min_y, min_z, max_x, max_y, max_z)
+                    # For a point, min and max are the same.
+                    self.rtree.insert(i, (*mean, *mean))
 
                 self.global_model_cpu = copy.deepcopy(local_model_cpu)
 
             else:
-                fov_comp_indices = self.gsh.find_points(pcld)
+                # fov_comp_indices = self.gsh.find_points(pcld)
+                # Find components in the point cloud's bounding box using the R-tree
+                min_bounds = pcld[:, :3].min(axis=0)
+                max_bounds = pcld[:, :3].max(axis=0)
+                fov_comp_indices = list(self.rtree.intersection((*min_bounds, *max_bounds)))
 
                 novel_pts = None
                 if len(fov_comp_indices) > 1:
@@ -182,10 +197,15 @@ class SOGMMROSNode:
 
                     new_n_components = self.global_model_cpu.n_components_
 
-                    self.gsh.add_points(
-                        local_model_cpu.means_,
-                        np.arange(old_n_components, new_n_components, dtype=int),
-                    )
+                    # self.gsh.add_points(
+                    #     local_model_cpu.means_,
+                    #     np.arange(old_n_components, new_n_components, dtype=int),
+                    # )
+                    # Add new components to the R-tree
+                    for i in range(local_model_cpu.n_components_):
+                        idx = old_n_components + i
+                        mean = local_model_cpu.means_[i, :3]
+                        self.rtree.insert(idx, (*mean, *mean))
 
                     self.novel_pts_placeholder = None
 
