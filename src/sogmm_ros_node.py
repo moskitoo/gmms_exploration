@@ -9,8 +9,10 @@ and publishes visualization markers for RViz.
 import copy
 import threading
 import time
+import traceback
 from typing import List
 
+import matplotlib.cm as cm
 import numpy as np
 import ros_numpy
 import rospy
@@ -32,7 +34,7 @@ from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
 
-class MasterGMM():
+class MasterGMM:
     def __init__(self):
         self.model = None
         self.fusion_counts = []
@@ -42,9 +44,8 @@ class MasterGMM():
         p = index.Property()
         p.dimension = 3
         self.rtree = index.Index(properties=p)
-        
-    def _calculate_kl(self, mu1, cov1, mu2, cov2, symmetric = True):
-        
+
+    def _calculate_kl(self, mu1, cov1, mu2, cov2, symmetric=True):
         p = mu1.shape[0]
 
         def kl_divergence(m1, c1, m2, c2):
@@ -55,13 +56,16 @@ class MasterGMM():
             log_det_term = np.log(np.linalg.det(c2) / np.linalg.det(c1))
             return 0.5 * (trace_term + mahalanobis_term - p + log_det_term)
 
-        d1 = kl_divergence(mu1, cov1, mu2, cov2)
+        try:
+            d1 = kl_divergence(mu1, cov1, mu2, cov2)
 
-        if symmetric:
-            d2 = kl_divergence(mu2, cov2, mu1, cov1)
-            return d1 + d2
-        else:
-            return d1
+            if symmetric:
+                d2 = kl_divergence(mu2, cov2, mu1, cov1)
+                return d1 + d2
+            else:
+                return d1
+        except np.linalg.LinAlgError:
+            return float("inf")
 
     def _fuse_components(self, master_idx, incoming_measurement):
         """Merges a measurement component into a master component."""
@@ -75,13 +79,15 @@ class MasterGMM():
 
         w_new = w_i + w_j
         mu_new = (w_i * mu_i + w_j * mu_j) / w_new
-        
+
         displacement = np.linalg.norm(mu_new[:3] - mu_i[:3])
 
         diff_i = (mu_i - mu_new).reshape(4, 1)
         diff_j = (mu_j - mu_new).reshape(4, 1)
-        
-        cov_new = (w_i * (cov_i + diff_i @ diff_i.T) + w_j * (cov_j + diff_j @ diff_j.T)) / w_new
+
+        cov_new = (
+            w_i * (cov_i + diff_i @ diff_i.T) + w_j * (cov_j + diff_j @ diff_j.T)
+        ) / w_new
 
         # Update master model in place
         self.model.weights_[master_idx] = w_new
@@ -90,10 +96,22 @@ class MasterGMM():
         self.fusion_counts[master_idx] += 1
         self.last_displacements[master_idx] = displacement
 
+    def _make_writable(self, gmm):
+        # Create deep writable NumPy copies detached from pybind11
+        gmm.weights_ = np.array(gmm.weights_, copy=True)
+        gmm.means_ = np.array(gmm.means_, copy=True)
+        gmm.covariances_ = np.array(gmm.covariances_, copy=True)
+        return gmm
+
     def update(self, gmm_measurement, match_threshold=5.0):
         """Updates the master GMM with a new measurement GMM."""
+
+        gmm_measurement = self._make_writable(gmm_measurement)
+
         if self.model is None:
-            self.model = gmm_measurement
+            self.model = self._make_writable(gmm_measurement)
+
+
             self.fusion_counts = [1] * gmm_measurement.n_components_
             self.last_displacements = [0.0] * gmm_measurement.n_components_
             self.model.weights_ /= np.sum(self.model.weights_)  # Normalize initial weights
@@ -115,7 +133,7 @@ class MasterGMM():
         for j in range(gmm_measurement.n_components_):
             meas_mu = gmm_measurement.means_[j]
             meas_cov = gmm_measurement.covariances_[j].reshape(4, 4)
-            
+
             min_dist = float("inf")
             best_master_idx = -1
 
@@ -127,13 +145,15 @@ class MasterGMM():
                 if dist < min_dist:
                     min_dist = dist
                     best_master_idx = i
-            
+
             if best_master_idx != -1 and min_dist < match_threshold:
-                meas_comp = gmm_measurement.submap_from_indices([j])
+                meas_comp = self._make_writable(gmm_measurement.submap_from_indices([j]))
                 self._fuse_components(best_master_idx, meas_comp)
-                matched_master_indices.add(best_master_idx)
             else:
-                new_components_to_add.append(gmm_measurement.submap_from_indices([j]))
+                new_components_to_add.append(self._make_writable(gmm_measurement.submap_from_indices([j])))
+
+
+        rospy.loginfo("fused gaussians")
 
         # Add new components by merging
         if new_components_to_add:
@@ -142,17 +162,20 @@ class MasterGMM():
                 self.model.merge(new_comp)
                 self.fusion_counts.append(1)
                 self.last_displacements.append(0.0)
-            
+
             # Add the newly created components to the R-tree
             new_n_components = self.model.n_components_
             for i in range(old_n_components, new_n_components):
                 mean = self.model.means_[i, :3]
                 self.rtree.insert(i, (*mean, *mean))
 
+        rospy.loginfo("merged not matched gaussians")
+
         # Normalize weights
         total_weight = np.sum(self.model.weights_)
         if total_weight > 0:
             self.model.weights_ /= total_weight
+
 
 class SOGMMROSNode:
     """
@@ -170,6 +193,9 @@ class SOGMMROSNode:
         self.enable_visualization = rospy.get_param("~enable_visualization", True)
         self.target_frame = rospy.get_param("~target_frame", "map")
         self.min_novel_points = rospy.get_param("~min_novel_points", 500)
+        self.color_by = rospy.get_param(
+            "~color_by", "intensity"
+        )  # Options: intensity, confidence, stability
 
         # Publishers
         self.marker_pub = rospy.Publisher(
@@ -188,9 +214,6 @@ class SOGMMROSNode:
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        # self.sogmm = None
-        # self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
-
         self.l_thres = 0.05
         self.novel_pts_placeholder = None
         self.master_gmm = MasterGMM()
@@ -206,6 +229,7 @@ class SOGMMROSNode:
         rospy.loginfo(f"  - Bandwidth: {self.bandwidth}")
         rospy.loginfo(f"  - Visualization scale: {self.visualization_scale}")
         rospy.loginfo(f"  - Processing decimation: {self.processing_decimation}")
+        rospy.loginfo(f"  - Color by: {self.color_by}")
 
     def pointcloud_callback(self, msg):
         """
@@ -252,12 +276,14 @@ class SOGMMROSNode:
             # Visualize results - only if we have a model
             viz_start_time = time.time()
             if self.enable_visualization and self.master_gmm.model is not None:
-                self.visualize_gmm(self.master_gmm.model, self.target_frame, msg.header.stamp)
+                self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
             processing_time = time.time() - start_time
             n_components = (
-                self.master_gmm.model.n_components_ if self.master_gmm.model is not None else 0
+                self.master_gmm.model.n_components_
+                if self.master_gmm.model is not None
+                else 0
             )
             rospy.loginfo(
                 f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GMM: {gmm_time:.3f}s, Viz: {viz_time:.3f}s)"
@@ -269,7 +295,7 @@ class SOGMMROSNode:
             self.gmm_size_pub.publish(gmm_stats_msg)
 
         except Exception as e:
-            rospy.logerr(f"Error processing point cloud: {str(e)}")
+            rospy.logerr(f"Error processing point cloud: {e}\n{traceback.format_exc()}")
 
     def transform_point_cloud(self, msg, points_3d_original, target_frame):
         try:
@@ -277,7 +303,6 @@ class SOGMMROSNode:
             transform = self.tf_buffer.lookup_transform(
                 target_frame,
                 msg.header.frame_id,
-                # rospy.Time(0),  # get the latest transform
                 msg.header.stamp,
                 rospy.Duration(1.0),
             )
@@ -370,20 +395,30 @@ class SOGMMROSNode:
         scores = scores.flatten()
         return pcld[scores < self.l_thres, :]
 
-    # def submap_from_indices(self, model, indices: List[int]) -> SOGMM:
-    #     weights = model.weights_[indices]
-    #     means = model.means_[indices, :]
-    #     covariances = model.covariances_[indices, :]
-    #     return SOGMM(weights, means, covariances)
-
-    def visualize_gmm(self, model, frame_id, timestamp):
+    def visualize_gmm(self, master_gmm, frame_id, timestamp):
         """
         Publish MarkerArray for RViz visualization
         """
+        model = master_gmm.model
         if model is None or model.n_components_ == 0:
             return
 
         marker_array = MarkerArray()
+
+        # Normalize values for coloring if needed
+        norm_counts = []
+        if self.color_by == "confidence":
+            max_count = max(master_gmm.fusion_counts) if master_gmm.fusion_counts else 1.0
+            norm_counts = [c / max(1.0, max_count) for c in master_gmm.fusion_counts]
+
+        norm_disps = []
+        if self.color_by == "stability":
+            max_disp = (
+                max(master_gmm.last_displacements)
+                if master_gmm.last_displacements
+                else 1.0
+            )
+            norm_disps = [d / max(1.0, max_disp) for d in master_gmm.last_displacements]
 
         for i in range(len(model.means_)):
             marker = Marker()
@@ -396,7 +431,6 @@ class SOGMMROSNode:
 
             # Extract mean (first 3 components are XYZ, 4th is intensity)
             mean = model.means_[i, :3]
-            intensity = model.means_[i, 3]
 
             try:
                 # Reshape covariance from flat array to 4x4 and extract 3x3 spatial part
@@ -446,14 +480,28 @@ class SOGMMROSNode:
                 marker.scale.x = marker.scale.y = marker.scale.z = avg_scale
                 marker.pose.orientation.w = 1.0
 
-            # Set color based on intensity (grayscale)
-            gray_val = float(intensity)  # Intensity is already in 0-1 range
-            marker.color.r = gray_val
-            marker.color.g = gray_val
-            marker.color.b = gray_val
-
-            # Set alpha based on intensity with minimum visibility
-            marker.color.a = float(min(1.0, max(0.3, intensity * 2.0)))
+            # Set color based on the selected mode
+            if self.color_by == "confidence":
+                # Colormap: Red (low confidence) -> Green -> Blue (high confidence)
+                color = cm.jet(norm_counts[i])
+                marker.color.r = color[0]
+                marker.color.g = color[1]
+                marker.color.b = color[2]
+                marker.color.a = 0.8
+            elif self.color_by == "stability":
+                # Colormap: Blue (stable) -> Red (unstable)
+                color = cm.coolwarm(norm_disps[i])
+                marker.color.r = color[0]
+                marker.color.g = color[1]
+                marker.color.b = color[2]
+                marker.color.a = 0.8
+            else:  # Default to intensity
+                intensity = model.means_[i, 3]
+                gray_val = float(intensity)
+                marker.color.r = gray_val
+                marker.color.g = gray_val
+                marker.color.b = gray_val
+                marker.color.a = float(min(1.0, max(0.3, intensity * 2.0)))
 
             marker.lifetime = rospy.Duration(2.0)  # Markers last 2 seconds
 
