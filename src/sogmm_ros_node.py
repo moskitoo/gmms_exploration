@@ -36,7 +36,13 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 class MasterGMM:
     def __init__(self):
-        self.model = None
+        # self.model = None
+        # Store GMM components as numpy arrays we control
+        self.weights = None
+        self.means = None
+        self.covariances = None
+        self.n_components = 0
+
         self.fusion_counts = []
         self.last_displacements = []
 
@@ -69,9 +75,9 @@ class MasterGMM:
 
     def _fuse_components(self, master_idx, incoming_measurement):
         """Merges a measurement component into a master component."""
-        w_i = self.model.weights_[master_idx]
-        mu_i = self.model.means_[master_idx]
-        cov_i = self.model.covariances_[master_idx].reshape(4, 4)
+        w_i = self.weights[master_idx]
+        mu_i = self.means[master_idx]
+        cov_i = self.covariances[master_idx].reshape(4, 4)
 
         w_j = incoming_measurement.weights_[0]
         mu_j = incoming_measurement.means_[0]
@@ -90,9 +96,9 @@ class MasterGMM:
         ) / w_new
 
         # Update master model in place
-        self.model.weights_[master_idx] = w_new
-        self.model.means_[master_idx] = mu_new
-        self.model.covariances_[master_idx] = cov_new.flatten()
+        self.weights[master_idx] = w_new
+        self.means[master_idx] = mu_new
+        self.covariances[master_idx] = cov_new.flatten()
         self.fusion_counts[master_idx] += 1
         self.last_displacements[master_idx] = displacement
 
@@ -108,17 +114,20 @@ class MasterGMM:
 
         gmm_measurement = self._make_writable(gmm_measurement)
 
-        if self.model is None:
-            self.model = self._make_writable(gmm_measurement)
+        if self.n_components == 0:
+            # self.model = self._make_writable(gmm_measurement)
+            self.weights = gmm_measurement.weights_
+            self.means = gmm_measurement.means_
+            self.covariances = gmm_measurement.covariances_
+            self.n_components = gmm_measurement.n_components_
 
-
-            self.fusion_counts = [1] * gmm_measurement.n_components_
-            self.last_displacements = [0.0] * gmm_measurement.n_components_
-            self.model.weights_ /= np.sum(self.model.weights_)  # Normalize initial weights
+            self.fusion_counts = [1] * self.n_components
+            self.last_displacements = [0.0] * self.n_components
+            self.weights /= np.sum(self.weights)  # Normalize initial weights
 
             # Add all new components to the R-tree
-            for i in range(self.model.n_components_):
-                mean = self.model.means_[i, :3]
+            for i in range(self.n_components):
+                mean = self.means[i, :3]
                 self.rtree.insert(i, (*mean, *mean))
             return
 
@@ -127,7 +136,6 @@ class MasterGMM:
         max_bounds = gmm_measurement.means_[:, :3].max(axis=0)
         candidate_master_indices = list(self.rtree.intersection((*min_bounds, *max_bounds)))
 
-        matched_master_indices = set()
         new_components_to_add = []
 
         for j in range(gmm_measurement.n_components_):
@@ -139,8 +147,8 @@ class MasterGMM:
 
             # Only search within the candidate subset
             for i in candidate_master_indices:
-                master_mu = self.model.means_[i]
-                master_cov = self.model.covariances_[i].reshape(4, 4)
+                master_mu = self.means[i]
+                master_cov = self.covariances[i].reshape(4, 4)
                 dist = self._calculate_kl(meas_mu, meas_cov, master_mu, master_cov)
                 if dist < min_dist:
                     min_dist = dist
@@ -157,24 +165,36 @@ class MasterGMM:
 
         # Add new components by merging
         if new_components_to_add:
-            old_n_components = self.model.n_components_
+            # Create a temporary SOGMM object from our current master data
+            temp_model = CPUContainerf4(self.n_components)
+            temp_model.weights_ = self.weights
+            temp_model.means_ = self.means
+            temp_model.covariances_ = self.covariances
+
+            old_n_components = self.n_components
             for new_comp in new_components_to_add:
-                self.model.merge(new_comp)
+                temp_model.merge(new_comp)
                 self.fusion_counts.append(1)
                 self.last_displacements.append(0.0)
 
+            # Extract the updated data back into our numpy arrays
+            self.n_components = temp_model.n_components_
+            self.weights = np.array(temp_model.weights_, copy=True)
+            self.means = np.array(temp_model.means_, copy=True)
+            self.covariances = np.array(temp_model.covariances_, copy=True)
+
             # Add the newly created components to the R-tree
-            new_n_components = self.model.n_components_
+            new_n_components = self.n_components
             for i in range(old_n_components, new_n_components):
-                mean = self.model.means_[i, :3]
+                mean = self.means[i, :3]
                 self.rtree.insert(i, (*mean, *mean))
 
         rospy.loginfo("merged not matched gaussians")
 
         # Normalize weights
-        total_weight = np.sum(self.model.weights_)
+        total_weight = np.sum(self.weights)
         if total_weight > 0:
-            self.model.weights_ /= total_weight
+            self.weights /= total_weight
 
 
 class SOGMMROSNode:
@@ -275,16 +295,12 @@ class SOGMMROSNode:
 
             # Visualize results - only if we have a model
             viz_start_time = time.time()
-            if self.enable_visualization and self.master_gmm.model is not None:
+            if self.enable_visualization and self.master_gmm.n_components > 0:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
             processing_time = time.time() - start_time
-            n_components = (
-                self.master_gmm.model.n_components_
-                if self.master_gmm.model is not None
-                else 0
-            )
+            n_components = self.master_gmm.n_components
             rospy.loginfo(
                 f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GMM: {gmm_time:.3f}s, Viz: {viz_time:.3f}s)"
             )
@@ -399,8 +415,7 @@ class SOGMMROSNode:
         """
         Publish MarkerArray for RViz visualization
         """
-        model = master_gmm.model
-        if model is None or model.n_components_ == 0:
+        if master_gmm.n_components == 0:
             return
 
         marker_array = MarkerArray()
@@ -420,7 +435,7 @@ class SOGMMROSNode:
             )
             norm_disps = [d / max(1.0, max_disp) for d in master_gmm.last_displacements]
 
-        for i in range(len(model.means_)):
+        for i in range(len(master_gmm.means)):
             marker = Marker()
             marker.header.frame_id = frame_id
             marker.header.stamp = timestamp
@@ -430,11 +445,11 @@ class SOGMMROSNode:
             marker.action = Marker.ADD
 
             # Extract mean (first 3 components are XYZ, 4th is intensity)
-            mean = model.means_[i, :3]
+            mean = master_gmm.means[i, :3]
 
             try:
                 # Reshape covariance from flat array to 4x4 and extract 3x3 spatial part
-                cov_flat = model.covariances_[i]
+                cov_flat = master_gmm.covariances[i]
                 cov_4x4 = cov_flat.reshape(4, 4)
                 cov = cov_4x4[:3, :3]
 
@@ -496,7 +511,7 @@ class SOGMMROSNode:
                 marker.color.b = color[2]
                 marker.color.a = 0.8
             else:  # Default to intensity
-                intensity = model.means_[i, 3]
+                intensity = master_gmm.means[i, 3]
                 gray_val = float(intensity)
                 marker.color.r = gray_val
                 marker.color.g = gray_val
@@ -518,11 +533,11 @@ class SOGMMROSNode:
                 clear_marker.action = Marker.DELETE
                 marker_array.markers.append(clear_marker)
 
-        self.last_marker_count = len(model.means_)
+        self.last_marker_count = len(master_gmm.means)
 
         # Publish markers
         self.marker_pub.publish(marker_array)
-        rospy.logdebug(f"Published {len(model.means_)} ellipsoid markers")
+        rospy.logdebug(f"Published {len(master_gmm.means)} ellipsoid markers")
 
     def run(self):
         """
