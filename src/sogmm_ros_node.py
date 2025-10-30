@@ -32,6 +32,128 @@ from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
 
+class MasterGMM():
+    def __init__(self):
+        self.model = None
+        self.fusion_counts = []
+        self.last_displacements = []
+
+        # R-tree for spatial indexing of GMM components
+        p = index.Property()
+        p.dimension = 3
+        self.rtree = index.Index(properties=p)
+        
+    def _calculate_kl(self, mu1, cov1, mu2, cov2, symmetric = True):
+        
+        p = mu1.shape[0]
+
+        def kl_divergence(m1, c1, m2, c2):
+            c2_inv = np.linalg.inv(c2)
+            trace_term = np.trace(c2_inv @ c1)
+            mean_diff = m2 - m1
+            mahalanobis_term = mean_diff.T @ c2_inv @ mean_diff
+            log_det_term = np.log(np.linalg.det(c2) / np.linalg.det(c1))
+            return 0.5 * (trace_term + mahalanobis_term - p + log_det_term)
+
+        d1 = kl_divergence(mu1, cov1, mu2, cov2)
+
+        if symmetric:
+            d2 = kl_divergence(mu2, cov2, mu1, cov1)
+            return d1 + d2
+        else:
+            return d1
+
+    def _fuse_components(self, master_idx, incoming_measurement):
+        """Merges a measurement component into a master component."""
+        w_i = self.model.weights_[master_idx]
+        mu_i = self.model.means_[master_idx]
+        cov_i = self.model.covariances_[master_idx].reshape(4, 4)
+
+        w_j = incoming_measurement.weights_[0]
+        mu_j = incoming_measurement.means_[0]
+        cov_j = incoming_measurement.covariances_[0].reshape(4, 4)
+
+        w_new = w_i + w_j
+        mu_new = (w_i * mu_i + w_j * mu_j) / w_new
+        
+        displacement = np.linalg.norm(mu_new[:3] - mu_i[:3])
+
+        diff_i = (mu_i - mu_new).reshape(4, 1)
+        diff_j = (mu_j - mu_new).reshape(4, 1)
+        
+        cov_new = (w_i * (cov_i + diff_i @ diff_i.T) + w_j * (cov_j + diff_j @ diff_j.T)) / w_new
+
+        # Update master model in place
+        self.model.weights_[master_idx] = w_new
+        self.model.means_[master_idx] = mu_new
+        self.model.covariances_[master_idx] = cov_new.flatten()
+        self.fusion_counts[master_idx] += 1
+        self.last_displacements[master_idx] = displacement
+
+    def update(self, gmm_measurement, match_threshold=5.0):
+        """Updates the master GMM with a new measurement GMM."""
+        if self.model is None:
+            self.model = gmm_measurement
+            self.fusion_counts = [1] * gmm_measurement.n_components_
+            self.last_displacements = [0.0] * gmm_measurement.n_components_
+            self.model.weights_ /= np.sum(self.model.weights_)  # Normalize initial weights
+
+            # Add all new components to the R-tree
+            for i in range(self.model.n_components_):
+                mean = self.model.means_[i, :3]
+                self.rtree.insert(i, (*mean, *mean))
+            return
+
+        # Find candidate master components using the R-tree
+        min_bounds = gmm_measurement.means_[:, :3].min(axis=0)
+        max_bounds = gmm_measurement.means_[:, :3].max(axis=0)
+        candidate_master_indices = list(self.rtree.intersection((*min_bounds, *max_bounds)))
+
+        matched_master_indices = set()
+        new_components_to_add = []
+
+        for j in range(gmm_measurement.n_components_):
+            meas_mu = gmm_measurement.means_[j]
+            meas_cov = gmm_measurement.covariances_[j].reshape(4, 4)
+            
+            min_dist = float("inf")
+            best_master_idx = -1
+
+            # Only search within the candidate subset
+            for i in candidate_master_indices:
+                master_mu = self.model.means_[i]
+                master_cov = self.model.covariances_[i].reshape(4, 4)
+                dist = self._calculate_kl(meas_mu, meas_cov, master_mu, master_cov)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_master_idx = i
+            
+            if best_master_idx != -1 and min_dist < match_threshold:
+                meas_comp = gmm_measurement.submap_from_indices([j])
+                self._fuse_components(best_master_idx, meas_comp)
+                matched_master_indices.add(best_master_idx)
+            else:
+                new_components_to_add.append(gmm_measurement.submap_from_indices([j]))
+
+        # Add new components by merging
+        if new_components_to_add:
+            old_n_components = self.model.n_components_
+            for new_comp in new_components_to_add:
+                self.model.merge(new_comp)
+                self.fusion_counts.append(1)
+                self.last_displacements.append(0.0)
+            
+            # Add the newly created components to the R-tree
+            new_n_components = self.model.n_components_
+            for i in range(old_n_components, new_n_components):
+                mean = self.model.means_[i, :3]
+                self.rtree.insert(i, (*mean, *mean))
+
+        # Normalize weights
+        total_weight = np.sum(self.model.weights_)
+        if total_weight > 0:
+            self.model.weights_ /= total_weight
+
 class SOGMMROSNode:
     """
     ROS Node for processing point clouds with SOGMM and visualizing results
@@ -69,15 +191,9 @@ class SOGMMROSNode:
         # self.sogmm = None
         # self.gsh = GMMSpatialHash(width=50, height=30, depth=15, resolution=0.2)
 
-        # R-tree properties for 3D data
-        p = index.Property()
-        p.dimension = 3
-        # The 'id' is the GMM component index, 'object' can be used if needed
-
-        self.rtree = index.Index(properties=p)
         self.l_thres = 0.05
         self.novel_pts_placeholder = None
-        self.global_model_cpu = None
+        self.master_gmm = MasterGMM()
         self.learner = GPUFit(self.bandwidth)
         self.inference = GPUInference()
 
@@ -122,71 +238,26 @@ class SOGMMROSNode:
             # Fit SOGMM model
             gmm_start_time = time.time()
 
-            local_model_gpu = None
+            # 1. Generate a local GMM from the current point cloud
+            local_model_gpu = GPUContainerf4()
+            self.learner.fit(self.extract_ms_data(pcld), pcld, local_model_gpu)
+            local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
+            local_model_gpu.to_host(local_model_cpu)
 
-            if self.global_model_cpu is None:
-                local_model_gpu = GPUContainerf4()
-                self.learner.fit(self.extract_ms_data(pcld), pcld, local_model_gpu)
-
-                local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
-                local_model_gpu.to_host(local_model_cpu)
-
-                # Add new components to the R-tree
-                for i in range(local_model_cpu.n_components_):
-                    mean = local_model_cpu.means_[i, :3]
-                    # R-tree stores (min_x, min_y, min_z, max_x, max_y, max_z)
-                    # For a point, min and max are the same.
-                    self.rtree.insert(i, (*mean, *mean))
-
-                self.global_model_cpu = copy.deepcopy(local_model_cpu)
-
-            else:
-                # fov_comp_indices = self.gsh.find_points(pcld)
-                # Find components in the point cloud's bounding box using the R-tree
-                min_bounds = pcld[:, :3].min(axis=0)
-                max_bounds = pcld[:, :3].max(axis=0)
-                fov_comp_indices = list(self.rtree.intersection((*min_bounds, *max_bounds)))
-
-                submap = self.global_model_cpu.submap_from_indices(list(fov_comp_indices))
-
-                # take it to the GPU
-                submap_gpu = GPUContainerf4(submap.n_components_)
-                submap_gpu.from_host(submap)
-
-                old_n_components = self.global_model_cpu.n_components_
-
-                local_model_gpu = GPUContainerf4()
-                self.learner.fit(self.extract_ms_data(pcld), pcld, local_model_gpu)
-                local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
-                local_model_gpu.to_host(local_model_cpu)
-
-                
-
-                self.global_model_cpu.merge(local_model_cpu)
-
-                new_n_components = self.global_model_cpu.n_components_
-
-                # self.gsh.add_points(
-                #     local_model_cpu.means_,
-                #     np.arange(old_n_components, new_n_components, dtype=int),
-                # )
-                # Add new components to the R-tree
-                for i in range(local_model_cpu.n_components_):
-                    idx = old_n_components + i
-                    mean = local_model_cpu.means_[i, :3]
-                    self.rtree.insert(idx, (*mean, *mean))
+            # 2. Update the master GMM with the new local measurement
+            self.master_gmm.update(local_model_cpu)
 
             gmm_time = time.time() - gmm_start_time
 
             # Visualize results - only if we have a model
             viz_start_time = time.time()
-            if self.enable_visualization and self.global_model_cpu is not None:
-                self.visualize_gmm(self.global_model_cpu, self.target_frame, msg.header.stamp)
+            if self.enable_visualization and self.master_gmm.model is not None:
+                self.visualize_gmm(self.master_gmm.model, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
             processing_time = time.time() - start_time
             n_components = (
-                self.global_model_cpu.n_components_ if self.global_model_cpu is not None else 0
+                self.master_gmm.model.n_components_ if self.master_gmm.model is not None else 0
             )
             rospy.loginfo(
                 f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GMM: {gmm_time:.3f}s, Viz: {viz_time:.3f}s)"
