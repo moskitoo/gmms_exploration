@@ -428,26 +428,61 @@ class SOGMMROSNode:
 
         marker_array = MarkerArray()
 
-        # Normalize values for coloring if needed
-        norm_counts = []
+        # Normalize values for coloring based on selected mode
+        norm_values = []
+        
         if self.color_by == "confidence":
-            # Apply logarithmic scaling to reduce the gap between new and old
-            log_counts = [np.log1p(c) for c in master_gmm.fusion_counts]  # log(1+x) to handle 0
+            # Apply logarithmic scaling to fusion counts
+            log_counts = [np.log1p(c) for c in master_gmm.fusion_counts]
             max_log_count = max(log_counts) if log_counts else 1.0
-            norm_counts = [c / max(1.0, max_log_count) for c in log_counts]
-
-        norm_disps = []
-        if self.color_by == "stability":
-            log_counts = [np.log1p(c) for c in master_gmm.last_displacements]
-            max_log_count = (
-                max(log_counts)
-                if log_counts
-                else 1.0
-            )
-            norm_disps = [d / max(1.0, max_log_count) for d in log_counts]
+            norm_values = [c / max(1.0, max_log_count) for c in log_counts]
+            
+        elif self.color_by == "stability":
+            # Stability based on displacement only
+            for idx in range(len(master_gmm.means)):
+                displacement = master_gmm.last_displacements[idx]
+                
+                # Score inversely proportional to displacement
+                # Lower displacement = higher stability score
+                score = np.exp(-displacement / 0.05)  # 0.05 = threshold for "small"
+                norm_values.append(score)
+                
+            # Normalize to 0-1 range
+            if norm_values:
+                max_score = max(norm_values) if max(norm_values) > 0 else 1.0
+                norm_values = [s / max_score for s in norm_values]
+                
+        elif self.color_by == "combined":
+            # Combined stability metric: fusion_count AND displacement
+            for idx in range(len(master_gmm.means)):
+                fusion_count = master_gmm.fusion_counts[idx]
+                displacement = master_gmm.last_displacements[idx]
+                
+                if fusion_count <= 1:
+                    # Unverified (only seen once) - score = 0
+                    score = 0.0
+                elif displacement < 0.001:
+                    # Suspicious (multiple fusions but nearly zero movement) - score = 0.3
+                    score = 0.3
+                elif displacement > 0.1:
+                    # Large displacement (unstable) - score = 0.5
+                    score = 0.5
+                else:
+                    # Good stability: small non-zero displacement
+                    # Higher fusion count = higher score
+                    displacement_score = np.exp(-displacement / 0.05)  # 0.05 = threshold for "small"
+                    fusion_score = np.log1p(fusion_count) / np.log1p(10)  # Normalized to ~0-1
+                    score = fusion_score * displacement_score
+                    
+                norm_values.append(score)
+                
+            # Normalize to 0-1 range
+            if norm_values:
+                max_score = max(norm_values) if max(norm_values) > 0 else 1.0
+                norm_values = [s / max_score for s in norm_values]
 
         for i in range(len(master_gmm.means)):
-            # ...existing code for sphere marker...
+            # Create sphere marker for Gaussian
             marker = Marker()
             marker.header.frame_id = frame_id
             marker.header.stamp = timestamp
@@ -509,20 +544,53 @@ class SOGMMROSNode:
 
             # Set color based on the selected mode
             if self.color_by == "confidence":
-                # Colormap: Red (low confidence) -> Green -> Blue (high confidence)
-                # color = cm.jet(norm_counts[i])
-                color = cm.plasma(norm_counts[i])
+                # Colormap: Purple (low confidence) -> Yellow (high confidence)
+                color = cm.plasma(norm_values[i])
                 marker.color.r = color[0]
                 marker.color.g = color[1]
                 marker.color.b = color[2]
                 marker.color.a = 0.8
+                
             elif self.color_by == "stability":
-                # Colormap: Blue (stable) -> Red (unstable)
-                color = cm.coolwarm(norm_disps[i])
+                # Colormap: Red (unstable) -> Green (stable)
+                color = cm.RdYlGn(norm_values[i])
                 marker.color.r = color[0]
                 marker.color.g = color[1]
                 marker.color.b = color[2]
                 marker.color.a = 0.8
+                
+            elif self.color_by == "combined":
+                # Custom color scheme for combined metric
+                fusion_count = master_gmm.fusion_counts[i]
+                displacement = master_gmm.last_displacements[i]
+                
+                if fusion_count <= 1:
+                    # Red = unverified (only seen once)
+                    marker.color.r = 1.0
+                    marker.color.g = 0.0
+                    marker.color.b = 0.0
+                    marker.color.a = 0.6
+                elif displacement < 0.001:
+                    # Yellow = suspicious (multiple fusions but no movement)
+                    marker.color.r = 1.0
+                    marker.color.g = 1.0
+                    marker.color.b = 0.0
+                    marker.color.a = 0.7
+                elif displacement > 0.1:
+                    # Orange = unstable (large displacement)
+                    marker.color.r = 1.0
+                    marker.color.g = 0.5
+                    marker.color.b = 0.0
+                    marker.color.a = 0.7
+                else:
+                    # Green = stable (good fusion count + small non-zero displacement)
+                    # Intensity based on normalized score
+                    green_intensity = norm_values[i]
+                    marker.color.r = 0.0
+                    marker.color.g = float(green_intensity)
+                    marker.color.b = 0.0
+                    marker.color.a = 0.8
+                    
             else:  # Default to intensity
                 intensity = master_gmm.means[i, 3]
                 gray_val = float(intensity)
@@ -547,15 +615,22 @@ class SOGMMROSNode:
             # Position text slightly above the ellipsoid
             text_marker.pose.position.x = float(mean[0])
             text_marker.pose.position.y = float(mean[1])
-            text_marker.pose.position.z = float(mean[2]) #+ marker.scale.z * 0.6
+            text_marker.pose.position.z = float(mean[2])
 
             text_marker.pose.orientation.w = 1.0
 
             # Set text content based on color mode
             if self.color_by == "confidence":
-                text_marker.text = f"{norm_counts[i]:.2f}"
+                count = master_gmm.fusion_counts[i]
+                text_marker.text = f"C:{count}"
+                # text_marker.text = f"{norm_values[i]}"
             elif self.color_by == "stability":
-                text_marker.text = f"{norm_disps[i]:.2f}"
+                disp = master_gmm.last_displacements[i]
+                text_marker.text = f"D:{disp:.3f}"
+            elif self.color_by == "combined":
+                count = master_gmm.fusion_counts[i]
+                disp = master_gmm.last_displacements[i]
+                text_marker.text = f"C:{count} D:{disp:.3f}"
             else:
                 text_marker.text = f"{master_gmm.means[i, 3]:.2f}"
 
