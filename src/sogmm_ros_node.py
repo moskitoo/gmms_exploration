@@ -114,6 +114,10 @@ class MasterGMM:
 
         gmm_measurement = self._make_writable(gmm_measurement)
 
+        no_incoming_gaussians = len(gmm_measurement.weights_)
+
+        rospy.loginfo(f"Incoming gaussians: {no_incoming_gaussians}")
+
         if self.n_components == 0:
             # self.model = self._make_writable(gmm_measurement)
             self.weights = gmm_measurement.weights_
@@ -160,10 +164,13 @@ class MasterGMM:
             else:
                 new_components_to_add.append(self._make_writable(gmm_measurement.submap_from_indices([j])))
 
+        no_novel_points = len(new_components_to_add)
 
-        rospy.loginfo("fused gaussians")
+        rospy.loginfo(f"Fused gaussians: {no_incoming_gaussians - no_novel_points}")
+        rospy.loginfo(f"Novel gaussians: {no_novel_points}")
 
         # Add new components by merging
+        # if new_components_to_add and no_novel_points / no_incoming_gaussians > 0.5:
         if new_components_to_add:
             # Create a temporary SOGMM object from our current master data
             temp_model = CPUContainerf4(self.n_components)
@@ -216,6 +223,7 @@ class SOGMMROSNode:
         self.color_by = rospy.get_param(
             "~color_by", "intensity"
         )  # Options: intensity, confidence, stability
+        self.kl_div_match_thresh = rospy.get_param("~kl_div_match_thresh", 5.0)
 
         # Publishers
         self.marker_pub = rospy.Publisher(
@@ -289,7 +297,7 @@ class SOGMMROSNode:
             local_model_gpu.to_host(local_model_cpu)
 
             # 2. Update the master GMM with the new local measurement
-            self.master_gmm.update(local_model_cpu)
+            self.master_gmm.update(gmm_measurement=local_model_cpu, match_threshold=self.kl_div_match_thresh)
 
             gmm_time = time.time() - gmm_start_time
 
@@ -436,6 +444,7 @@ class SOGMMROSNode:
             norm_disps = [d / max(1.0, max_disp) for d in master_gmm.last_displacements]
 
         for i in range(len(master_gmm.means)):
+            # ...existing code for sphere marker...
             marker = Marker()
             marker.header.frame_id = frame_id
             marker.header.stamp = timestamp
@@ -522,9 +531,47 @@ class SOGMMROSNode:
 
             marker_array.markers.append(marker)
 
+            # Add text marker for metric value
+            text_marker = Marker()
+            text_marker.header.frame_id = frame_id
+            text_marker.header.stamp = timestamp
+            text_marker.ns = "sogmm_text"
+            text_marker.id = i
+            text_marker.type = Marker.TEXT_VIEW_FACING
+            text_marker.action = Marker.ADD
+
+            # Position text slightly above the ellipsoid
+            text_marker.pose.position.x = float(mean[0])
+            text_marker.pose.position.y = float(mean[1])
+            text_marker.pose.position.z = float(mean[2]) #+ marker.scale.z * 0.6
+
+            text_marker.pose.orientation.w = 1.0
+
+            # Set text content based on color mode
+            if self.color_by == "confidence":
+                text_marker.text = f"{norm_counts[i]:.2f}"
+            elif self.color_by == "stability":
+                text_marker.text = f"{norm_disps[i]:.2f}"
+            else:
+                text_marker.text = f"{master_gmm.means[i, 3]:.2f}"
+
+            # Set text size
+            text_marker.scale.z = 0.05  # Text height
+
+            # Set text color (white with good visibility)
+            text_marker.color.r = 1.0
+            text_marker.color.g = 1.0
+            text_marker.color.b = 1.0
+            text_marker.color.a = 1.0
+
+            text_marker.lifetime = rospy.Duration(2.0)
+
+            marker_array.markers.append(text_marker)
+
         # Clear old markers if we have fewer components now
         if hasattr(self, "last_marker_count"):
-            for i in range(len(marker_array.markers), self.last_marker_count):
+            for i in range(len(master_gmm.means), self.last_marker_count):
+                # Clear sphere marker
                 clear_marker = Marker()
                 clear_marker.header.frame_id = frame_id
                 clear_marker.header.stamp = timestamp
@@ -533,11 +580,20 @@ class SOGMMROSNode:
                 clear_marker.action = Marker.DELETE
                 marker_array.markers.append(clear_marker)
 
+                # Clear text marker
+                clear_text = Marker()
+                clear_text.header.frame_id = frame_id
+                clear_text.header.stamp = timestamp
+                clear_text.ns = "sogmm_text"
+                clear_text.id = i
+                clear_text.action = Marker.DELETE
+                marker_array.markers.append(clear_text)
+
         self.last_marker_count = len(master_gmm.means)
 
         # Publish markers
         self.marker_pub.publish(marker_array)
-        rospy.logdebug(f"Published {len(master_gmm.means)} ellipsoid markers")
+        rospy.logdebug(f"Published {len(master_gmm.means)} ellipsoid markers with text")
 
     def run(self):
         """
