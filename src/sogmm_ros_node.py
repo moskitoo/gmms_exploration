@@ -431,8 +431,10 @@ class SOGMMROSNode:
         # Normalize values for coloring if needed
         norm_counts = []
         if self.color_by == "confidence":
-            max_count = max(master_gmm.fusion_counts) if master_gmm.fusion_counts else 1.0
-            norm_counts = [c / max(1.0, max_count) for c in master_gmm.fusion_counts]
+            # Apply logarithmic scaling to reduce the gap between new and old
+            log_counts = [np.log1p(c) for c in master_gmm.fusion_counts]  # log(1+x) to handle 0
+            max_log_count = max(log_counts) if log_counts else 1.0
+            norm_counts = [c / max(1.0, max_log_count) for c in log_counts]
 
         norm_disps = []
         if self.color_by == "stability":
@@ -507,7 +509,8 @@ class SOGMMROSNode:
             # Set color based on the selected mode
             if self.color_by == "confidence":
                 # Colormap: Red (low confidence) -> Green -> Blue (high confidence)
-                color = cm.jet(norm_counts[i])
+                # color = cm.jet(norm_counts[i])
+                color = cm.plasma(norm_counts[i])
                 marker.color.r = color[0]
                 marker.color.g = color[1]
                 marker.color.b = color[2]
