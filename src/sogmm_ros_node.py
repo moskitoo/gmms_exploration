@@ -351,6 +351,8 @@ class SOGMMROSNode:
         self.visualization_scale = rospy.get_param("~visualization_scale", 2.0)
         self.color_by = rospy.get_param("~color_by", "intensity")  # Options: intensity, confidence, stability, combined
         self.add_metric_text = rospy.get_param("~add_metric_text", True)
+        self.suspicious_displacement = rospy.get_param("~suspicious_displacement", 0.01)
+        self.unstable_displacement = rospy.get_param("~unstable_displacement", 0.2)
         
         # Processing parameters
         self.processing_decimation = rospy.get_param("~processing_decimation", 1)
@@ -593,253 +595,250 @@ class SOGMMROSNode:
             return
 
         marker_array = MarkerArray()
+        norm_values = self._calculate_normalization_values(master_gmm)
 
-        # Normalize values for coloring based on selected mode
+        # Create markers for each Gaussian component
+        for i in range(len(master_gmm.means)):
+            # Create sphere marker
+            sphere_marker = self._create_sphere_marker(master_gmm, i, frame_id, timestamp, norm_values)
+            if sphere_marker:
+                marker_array.markers.append(sphere_marker)
+
+            # Create text marker if enabled
+            if self.add_metric_text:
+                text_marker = self._create_text_marker(master_gmm, i, frame_id, timestamp)
+                marker_array.markers.append(text_marker)
+
+        # Clear old markers if component count decreased
+        self._add_clear_markers(marker_array, len(master_gmm.means), frame_id, timestamp)
+
+        # Publish and update state
+        self.marker_pub.publish(marker_array)
+        self.last_marker_count = len(master_gmm.means)
+        rospy.logdebug(f"Published {len(master_gmm.means)} ellipsoid markers with text")
+
+    def _calculate_normalization_values(self, master_gmm):
+        """Calculate normalized values for color mapping based on selected mode."""
         norm_values = []
         
         if self.color_by == "confidence":
-            # Apply logarithmic scaling to fusion counts
             log_counts = [np.log1p(c) for c in master_gmm.fusion_counts]
             max_log_count = max(log_counts) if log_counts else 1.0
             norm_values = [c / max(1.0, max_log_count) for c in log_counts]
             
         elif self.color_by == "stability":
-            # Stability based on displacement only
             for idx in range(len(master_gmm.means)):
                 displacement = master_gmm.last_displacements[idx]
-                
-                # Score inversely proportional to displacement
-                # Lower displacement = higher stability score
-                score = np.exp(-displacement / 0.05)  # 0.05 = threshold for "small"
+                score = np.exp(-displacement / 0.05)
                 norm_values.append(score)
                 
-            # Normalize to 0-1 range
             if norm_values:
                 max_score = max(norm_values) if max(norm_values) > 0 else 1.0
                 norm_values = [s / max_score for s in norm_values]
                 
         elif self.color_by == "combined":
-            # Combined stability metric: fusion_count AND displacement
-            for idx in range(len(master_gmm.means)):
-                fusion_count = master_gmm.fusion_counts[idx]
-                displacement = master_gmm.last_displacements[idx]
+            norm_values = self._calculate_combined_scores(master_gmm)
+            
+        return norm_values
+
+    def _calculate_combined_scores(self, master_gmm):
+        """Calculate combined stability scores based on fusion count and displacement."""
+        norm_values = []
+        
+        for idx in range(len(master_gmm.means)):
+            fusion_count = master_gmm.fusion_counts[idx]
+            displacement = master_gmm.last_displacements[idx]
+            
+            if fusion_count <= 1:
+                score = 0.0  # Unverified
+            elif displacement < self.suspicious_displacement:
+                score = 0.3  # Suspicious (no movement)
+            elif displacement > self.unstable_displacement:
+                score = 0.5  # Unstable (large displacement)
+            else:
+                # Good stability: combine displacement and fusion scores
+                displacement_score = np.exp(-displacement / 0.05)
+                fusion_score = np.log1p(fusion_count) / np.log1p(10)
+                score = fusion_score * displacement_score
                 
-                if fusion_count <= 1:
-                    # Unverified (only seen once) - score = 0
-                    score = 0.0
-                elif displacement < 0.001:
-                    # Suspicious (multiple fusions but nearly zero movement) - score = 0.3
-                    score = 0.3
-                elif displacement > 0.1:
-                    # Large displacement (unstable) - score = 0.5
-                    score = 0.5
-                else:
-                    # Good stability: small non-zero displacement
-                    # Higher fusion count = higher score
-                    displacement_score = np.exp(-displacement / 0.05)  # 0.05 = threshold for "small"
-                    fusion_score = np.log1p(fusion_count) / np.log1p(10)  # Normalized to ~0-1
-                    score = fusion_score * displacement_score
-                    
-                norm_values.append(score)
-                
-            # Normalize to 0-1 range
-            if norm_values:
-                max_score = max(norm_values) if max(norm_values) > 0 else 1.0
-                norm_values = [s / max_score for s in norm_values]
+            norm_values.append(score)
+            
+        # Normalize to 0-1 range
+        if norm_values:
+            max_score = max(norm_values) if max(norm_values) > 0 else 1.0
+            norm_values = [s / max_score for s in norm_values]
+            
+        return norm_values
 
-        for i in range(len(master_gmm.means)):
-            # Create sphere marker for Gaussian
-            marker = Marker()
-            marker.header.frame_id = frame_id
-            marker.header.stamp = timestamp
-            marker.ns = "sogmm_ellipsoids"
-            marker.id = i
-            marker.type = Marker.SPHERE
-            marker.action = Marker.ADD
+    def _create_sphere_marker(self, master_gmm, i, frame_id, timestamp, norm_values):
+        """Create a sphere marker for a Gaussian component."""
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = timestamp
+        marker.ns = "sogmm_ellipsoids"
+        marker.id = i
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.lifetime = rospy.Duration(2.0)
 
-            # Extract mean (first 3 components are XYZ, 4th is intensity)
-            mean = master_gmm.means[i, :3]
+        # Set position
+        mean = master_gmm.means[i, :3]
+        marker.pose.position.x = float(mean[0])
+        marker.pose.position.y = float(mean[1])
+        marker.pose.position.z = float(mean[2])
 
-            try:
-                # Reshape covariance from flat array to 4x4 and extract 3x3 spatial part
-                cov_flat = master_gmm.covariances[i]
-                cov_4x4 = cov_flat.reshape(4, 4)
-                cov = cov_4x4[:3, :3]
+        # Set scale and orientation based on covariance
+        if not self._set_marker_geometry(marker, master_gmm.covariances[i]):
+            return None
 
-            except (np.linalg.LinAlgError, ValueError) as e:
-                rospy.logwarn(f"Error with component {i}: {e}")
-                continue
+        # Set color based on visualization mode
+        self._set_marker_color(marker, master_gmm, i, norm_values)
 
-            # Set position (mean of 3D coordinates)
-            marker.pose.position.x = float(mean[0])
-            marker.pose.position.y = float(mean[1])
-            marker.pose.position.z = float(mean[2])
+        return marker
 
+    def _set_marker_geometry(self, marker, covariance_flat):
+        """Set marker scale and orientation based on covariance matrix."""
+        try:
             # Extract 3D spatial covariance
-            cov_3d = cov[:3, :3] if cov.shape[0] >= 3 else cov
+            cov_4x4 = covariance_flat.reshape(4, 4)
+            cov_3d = cov_4x4[:3, :3]
 
-            try:
-                # Compute eigenvalues and eigenvectors for scale and orientation
-                eigenvals, eigenvecs = np.linalg.eigh(cov_3d)
+            # Compute eigenvalues and eigenvectors
+            eigenvals, eigenvecs = np.linalg.eigh(cov_3d)
+            eigenvals = np.maximum(eigenvals, 1e-6)
 
-                # Ensure positive eigenvalues
-                eigenvals = np.maximum(eigenvals, 1e-6)
+            # Set scale based on eigenvalues
+            scale_factor = self.visualization_scale
+            marker.scale.x = 2 * scale_factor * np.sqrt(eigenvals[0])
+            marker.scale.y = 2 * scale_factor * np.sqrt(eigenvals[1])
+            marker.scale.z = 2 * scale_factor * np.sqrt(eigenvals[2])
 
-                # Set scale based on eigenvalues
-                scale_factor = self.visualization_scale
-                marker.scale.x = 2 * scale_factor * np.sqrt(eigenvals[0])
-                marker.scale.y = 2 * scale_factor * np.sqrt(eigenvals[1])
-                marker.scale.z = 2 * scale_factor * np.sqrt(eigenvals[2])
+            # Set orientation based on eigenvectors
+            r = R.from_matrix(eigenvecs)
+            quat = r.as_quat()
+            marker.pose.orientation.x = float(quat[0])
+            marker.pose.orientation.y = float(quat[1])
+            marker.pose.orientation.z = float(quat[2])
+            marker.pose.orientation.w = float(quat[3])
 
-                # Set orientation based on eigenvectors
-                # Convert rotation matrix to quaternion
-                rot_matrix = eigenvecs
-                r = R.from_matrix(rot_matrix)
-                quat = r.as_quat()  # Returns [x, y, z, w]
+            return True
 
-                marker.pose.orientation.x = float(quat[0])
-                marker.pose.orientation.y = float(quat[1])
-                marker.pose.orientation.z = float(quat[2])
-                marker.pose.orientation.w = float(quat[3])
+        except (np.linalg.LinAlgError, ValueError) as e:
+            rospy.logwarn(f"Error processing covariance: {e}")
+            # Fallback to spherical visualization
+            avg_scale = self.visualization_scale * 0.1
+            marker.scale.x = marker.scale.y = marker.scale.z = avg_scale
+            marker.pose.orientation.w = 1.0
+            return True
 
-            except np.linalg.LinAlgError:
-                # Fallback to spherical visualization
-                avg_scale = self.visualization_scale * 0.1
-                marker.scale.x = marker.scale.y = marker.scale.z = avg_scale
-                marker.pose.orientation.w = 1.0
+    def _set_marker_color(self, marker, master_gmm, i, norm_values):
+        """Set marker color based on visualization mode."""
+        if self.color_by == "confidence":
+            color = cm.plasma(norm_values[i])
+            marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
+            marker.color.a = 0.8
+            
+        elif self.color_by == "stability":
+            color = cm.RdYlGn(norm_values[i])
+            marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
+            marker.color.a = 0.8
+            
+        elif self.color_by == "combined":
+            self._set_combined_color(marker, master_gmm, i, norm_values)
+            
+        else:  # Default to intensity
+            intensity = master_gmm.means[i, 3]
+            gray_val = float(intensity)
+            marker.color.r = marker.color.g = marker.color.b = gray_val
+            marker.color.a = float(min(1.0, max(0.3, intensity * 2.0)))
 
-            # Set color based on the selected mode
-            if self.color_by == "confidence":
-                # Colormap: Purple (low confidence) -> Yellow (high confidence)
-                color = cm.plasma(norm_values[i])
-                marker.color.r = color[0]
-                marker.color.g = color[1]
-                marker.color.b = color[2]
-                marker.color.a = 0.8
-                
-            elif self.color_by == "stability":
-                # Colormap: Red (unstable) -> Green (stable)
-                color = cm.RdYlGn(norm_values[i])
-                marker.color.r = color[0]
-                marker.color.g = color[1]
-                marker.color.b = color[2]
-                marker.color.a = 0.8
-                
-            elif self.color_by == "combined":
-                # Custom color scheme for combined metric
-                fusion_count = master_gmm.fusion_counts[i]
-                displacement = master_gmm.last_displacements[i]
-                
-                if fusion_count <= 1:
-                    # Red = unverified (only seen once)
-                    marker.color.r = 1.0
-                    marker.color.g = 0.0
-                    marker.color.b = 0.0
-                    marker.color.a = 0.6
-                elif displacement < 0.001:
-                    # Yellow = suspicious (multiple fusions but no movement)
-                    marker.color.r = 1.0
-                    marker.color.g = 1.0
-                    marker.color.b = 0.0
-                    marker.color.a = 0.7
-                elif displacement > 0.2:
-                    # Orange = unstable (large displacement)
-                    marker.color.r = 1.0
-                    marker.color.g = 0.5
-                    marker.color.b = 0.0
-                    marker.color.a = 0.7
-                else:
-                    # Green = stable (good fusion count + small non-zero displacement)
-                    # Intensity based on normalized score
-                    green_intensity = norm_values[i]
-                    marker.color.r = 0.0
-                    marker.color.g = float(green_intensity)
-                    marker.color.b = 0.0
-                    marker.color.a = 0.8
-                    
-            else:  # Default to intensity
-                intensity = master_gmm.means[i, 3]
-                gray_val = float(intensity)
-                marker.color.r = gray_val
-                marker.color.g = gray_val
-                marker.color.b = gray_val
-                marker.color.a = float(min(1.0, max(0.3, intensity * 2.0)))
+    def _set_combined_color(self, marker, master_gmm, i, norm_values):
+        """Set color for combined visualization mode."""
+        fusion_count = master_gmm.fusion_counts[i]
+        displacement = master_gmm.last_displacements[i]
+        
+        if fusion_count <= 1:
+            # Red = unverified
+            marker.color.r, marker.color.g, marker.color.b = 1.0, 0.0, 0.0
+            marker.color.a = 0.6
+        elif displacement < self.suspicious_displacement:
+            # Yellow = suspicious
+            marker.color.r, marker.color.g, marker.color.b = 1.0, 1.0, 0.0
+            marker.color.a = 0.7
+        elif displacement > self.unstable_displacement:
+            # Orange = unstable
+            marker.color.r, marker.color.g, marker.color.b = 1.0, 0.5, 0.0
+            marker.color.a = 0.7
+        else:
+            # Green = stable (intensity based on score)
+            green_intensity = norm_values[i]
+            marker.color.r, marker.color.g, marker.color.b = 0.0, float(green_intensity), 0.0
+            marker.color.a = 0.8
 
-            marker.lifetime = rospy.Duration(2.0)  # Markers last 2 seconds
+    def _create_text_marker(self, master_gmm, i, frame_id, timestamp):
+        """Create a text marker for a Gaussian component."""
+        text_marker = Marker()
+        text_marker.header.frame_id = frame_id
+        text_marker.header.stamp = timestamp
+        text_marker.ns = "sogmm_text"
+        text_marker.id = i
+        text_marker.type = Marker.TEXT_VIEW_FACING
+        text_marker.action = Marker.ADD
+        text_marker.lifetime = rospy.Duration(2.0)
 
-            marker_array.markers.append(marker)
+        # Position at component mean
+        mean = master_gmm.means[i, :3]
+        text_marker.pose.position.x = float(mean[0])
+        text_marker.pose.position.y = float(mean[1])
+        text_marker.pose.position.z = float(mean[2])
+        text_marker.pose.orientation.w = 1.0
 
-            # Add text marker for metric value
-            if self.add_metric_text:
-                text_marker = Marker()
-                text_marker.header.frame_id = frame_id
-                text_marker.header.stamp = timestamp
-                text_marker.ns = "sogmm_text"
-                text_marker.id = i
-                text_marker.type = Marker.TEXT_VIEW_FACING
-                text_marker.action = Marker.ADD
+        # Set text content based on visualization mode
+        text_marker.text = self._get_text_content(master_gmm, i)
 
-                # Position text slightly above the ellipsoid
-                text_marker.pose.position.x = float(mean[0])
-                text_marker.pose.position.y = float(mean[1])
-                text_marker.pose.position.z = float(mean[2])
+        # Set text properties
+        text_marker.scale.z = 0.05
+        text_marker.color.r = text_marker.color.g = text_marker.color.b = 1.0
+        text_marker.color.a = 1.0
 
-                text_marker.pose.orientation.w = 1.0
+        return text_marker
 
-                # Set text content based on color mode
-                if self.color_by == "confidence":
-                    count = master_gmm.fusion_counts[i]
-                    text_marker.text = f"C:{count}"
-                    # text_marker.text = f"{norm_values[i]}"
-                elif self.color_by == "stability":
-                    disp = master_gmm.last_displacements[i]
-                    text_marker.text = f"D:{disp:.3f}"
-                elif self.color_by == "combined":
-                    count = master_gmm.fusion_counts[i]
-                    disp = master_gmm.last_displacements[i]
-                    text_marker.text = f"C:{count} D:{disp:.3f}"
-                else:
-                    text_marker.text = f"{master_gmm.means[i, 3]:.2f}"
+    def _get_text_content(self, master_gmm, i):
+        """Get text content for marker based on visualization mode."""
+        if self.color_by == "confidence":
+            return f"C:{master_gmm.fusion_counts[i]}"
+        elif self.color_by == "stability":
+            return f"D:{master_gmm.last_displacements[i]:.3f}"
+        elif self.color_by == "combined":
+            count = master_gmm.fusion_counts[i]
+            disp = master_gmm.last_displacements[i]
+            return f"C:{count} D:{disp:.3f}"
+        else:
+            return f"{master_gmm.means[i, 3]:.2f}"
 
-                # Set text size
-                text_marker.scale.z = 0.05  # Text height
+    def _add_clear_markers(self, marker_array, current_count, frame_id, timestamp):
+        """Add markers to clear old components if count decreased."""
+        if not hasattr(self, "last_marker_count"):
+            return
 
-                # Set text color (white with good visibility)
-                text_marker.color.r = 1.0
-                text_marker.color.g = 1.0
-                text_marker.color.b = 1.0
-                text_marker.color.a = 1.0
+        for i in range(current_count, self.last_marker_count):
+            # Clear sphere marker
+            clear_marker = Marker()
+            clear_marker.header.frame_id = frame_id
+            clear_marker.header.stamp = timestamp
+            clear_marker.ns = "sogmm_ellipsoids"
+            clear_marker.id = i
+            clear_marker.action = Marker.DELETE
+            marker_array.markers.append(clear_marker)
 
-                text_marker.lifetime = rospy.Duration(2.0)
-
-                marker_array.markers.append(text_marker)
-
-        # Clear old markers if we have fewer components now
-        if hasattr(self, "last_marker_count"):
-            for i in range(len(master_gmm.means), self.last_marker_count):
-                # Clear sphere marker
-                clear_marker = Marker()
-                clear_marker.header.frame_id = frame_id
-                clear_marker.header.stamp = timestamp
-                clear_marker.ns = "sogmm_ellipsoids"
-                clear_marker.id = i
-                clear_marker.action = Marker.DELETE
-                marker_array.markers.append(clear_marker)
-
-                # Clear text marker
-                clear_text = Marker()
-                clear_text.header.frame_id = frame_id
-                clear_text.header.stamp = timestamp
-                clear_text.ns = "sogmm_text"
-                clear_text.id = i
-                clear_text.action = Marker.DELETE
-                marker_array.markers.append(clear_text)
-
-        self.last_marker_count = len(master_gmm.means)
-
-        # Publish markers
-        self.marker_pub.publish(marker_array)
-        rospy.logdebug(f"Published {len(master_gmm.means)} ellipsoid markers with text")
+            # Clear text marker
+            clear_text = Marker()
+            clear_text.header.frame_id = frame_id
+            clear_text.header.stamp = timestamp
+            clear_text.ns = "sogmm_text"
+            clear_text.id = i
+            clear_text.action = Marker.DELETE
+            marker_array.markers.append(clear_text)
 
     def run(self):
         """
