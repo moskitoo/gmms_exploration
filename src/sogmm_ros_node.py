@@ -14,22 +14,17 @@ from typing import List
 
 import matplotlib.cm as cm
 import numpy as np
-import ros_numpy
+
 import rospy
-import sogmm_cpu
-import sogmm_gpu
+
 import tf2_ros
 from rtree import index
 from scipy.spatial.transform import Rotation as R
-from scripts.sogmm_hash_table import GMMSpatialHash
 from sensor_msgs.msg import PointCloud2
-from sogmm_cpu import SOGMMf3Host as CPUContainerf3
 from sogmm_cpu import SOGMMf4Host as CPUContainerf4
-from sogmm_gpu import SOGMMf3Device as GPUContainerf3
 from sogmm_gpu import SOGMMf4Device as GPUContainerf4
 from sogmm_gpu import SOGMMInference as GPUInference
 from sogmm_gpu import SOGMMLearner as GPUFit
-from sogmm_py.sogmm import SOGMM
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -51,6 +46,241 @@ class MasterGMM:
         p = index.Property()
         p.dimension = 3
         self.rtree = index.Index(properties=p)
+
+    def update(self, gmm_measurement, match_threshold=5.0):
+        """
+        Updates the master GMM with a new measurement GMM.
+
+        Args:
+            gmm_measurement: Incoming GMM measurement to integrate
+            match_threshold: KL divergence threshold for component matching
+        """
+        n_incoming = len(gmm_measurement.weights_)
+        rospy.loginfo(f"Processing {n_incoming} incoming Gaussians")
+
+        # Handle empty master GMM - initialize with first measurement
+        if self.n_components == 0:
+            self._initialize_from_measurement(gmm_measurement)
+            return
+
+        candidate_indices = self._find_spatial_candidates(gmm_measurement)
+        self._update_observation_counts(candidate_indices)
+
+        n_fused, new_components = self._match_and_fuse_components(
+            gmm_measurement, candidate_indices, match_threshold
+        )
+
+        if new_components:
+            self._add_new_components(new_components)
+
+        self._normalize_weights()
+
+        # Log results
+        n_novel = len(new_components)
+        rospy.loginfo(f"Fused: {n_fused}, Novel: {n_novel}")
+
+    def _make_writable(self, gmm):
+        # Create deep writable NumPy copies detached from pybind11
+        gmm.weights_ = np.array(gmm.weights_, copy=True)
+        gmm.means_ = np.array(gmm.means_, copy=True)
+        gmm.covariances_ = np.array(gmm.covariances_, copy=True)
+        return gmm
+
+    def _initialize_from_measurement(self, gmm_measurement):
+        """Initialize master GMM from first measurement."""
+        self.weights = np.array(gmm_measurement.weights_, copy=True)
+        self.means = np.array(gmm_measurement.means_, copy=True)
+        self.covariances = np.array(gmm_measurement.covariances_, copy=True)
+        self.n_components = gmm_measurement.n_components_
+
+        # Initialize tracking arrays
+        self.fusion_counts = [1] * self.n_components
+        self.observation_counts = [1] * self.n_components
+        self.last_displacements = [0.0] * self.n_components
+
+        # Build spatial index
+        for i in range(self.n_components):
+            mean = self.means[i, :3]
+            self.rtree.insert(i, (*mean, *mean))
+
+        self._normalize_weights()
+
+    def _find_spatial_candidates(self, gmm_measurement):
+        """Find master components spatially overlapping with measurement."""
+        # Get bounding box of incoming measurement
+        min_bounds = gmm_measurement.means_[:, :3].min(axis=0)
+        max_bounds = gmm_measurement.means_[:, :3].max(axis=0)
+
+        # Query R-tree for overlapping components
+        return list(self.rtree.intersection((*min_bounds, *max_bounds)))
+
+    def _update_observation_counts(self, candidate_indices):
+        """Update observation counts for components in re-observed region."""
+        for idx in candidate_indices:
+            self.observation_counts[idx] += 1
+
+    def _match_and_fuse_components(
+        self, gmm_measurement, candidate_indices, match_threshold
+    ):
+        """
+        Match measurement components to master components and fuse them.
+
+        Returns:
+            tuple: (number_fused, list_of_unmatched_components)
+        """
+        fused_master_indices = set()
+        unmatched_components = []
+
+        for j in range(gmm_measurement.n_components_):
+            best_match_idx = self._find_best_match(
+                gmm_measurement, j, candidate_indices, match_threshold
+            )
+
+            if best_match_idx is not None:
+                # Fuse with matched master component
+                meas_comp = self._make_writable(
+                    gmm_measurement.submap_from_indices([j])
+                )
+                self._fuse_components(best_match_idx, meas_comp)
+                fused_master_indices.add(best_match_idx)
+            else:
+                # No match found - add to unmatched list
+                unmatched_comp = self._make_writable(
+                    gmm_measurement.submap_from_indices([j])
+                )
+                unmatched_components.append(unmatched_comp)
+
+        return len(fused_master_indices), unmatched_components
+
+    def _find_best_match(
+        self, gmm_measurement, meas_idx, candidate_indices, match_threshold
+    ):
+        """
+        Find the best matching master component for a measurement component.
+
+        Returns:
+            int or None: Index of best matching master component, or None if no match
+        """
+        meas_mu = gmm_measurement.means_[meas_idx]
+        meas_cov = gmm_measurement.covariances_[meas_idx].reshape(4, 4)
+
+        min_distance = float("inf")
+        best_master_idx = None
+
+        for master_idx in candidate_indices:
+            master_mu = self.means[master_idx]
+            master_cov = self.covariances[master_idx].reshape(4, 4)
+
+            distance = self._calculate_kl(meas_mu, meas_cov, master_mu, master_cov)
+
+            if distance < min_distance:
+                min_distance = distance
+                best_master_idx = master_idx
+
+        # Return match only if below threshold
+        return best_master_idx if min_distance < match_threshold else None
+
+    def _add_new_components(self, new_components):
+        """Add unmatched components as new master components."""
+        # Create temporary container with current master state
+        temp_model = CPUContainerf4(self.n_components)
+        temp_model.weights_ = self.weights
+        temp_model.means_ = self.means
+        temp_model.covariances_ = self.covariances
+
+        old_n_components = self.n_components
+
+        # Merge each new component
+        for new_comp in new_components:
+            temp_model.merge(new_comp)
+            self.fusion_counts.append(1)
+            self.last_displacements.append(0.0)
+            self.observation_counts.append(1)
+
+        # Extract updated data back to numpy arrays
+        self.n_components = temp_model.n_components_
+        self.weights = np.array(temp_model.weights_, copy=True)
+        self.means = np.array(temp_model.means_, copy=True)
+        self.covariances = np.array(temp_model.covariances_, copy=True)
+
+        # Update spatial index with new components
+        for i in range(old_n_components, self.n_components):
+            mean = self.means[i, :3]
+            self.rtree.insert(i, (*mean, *mean))
+
+    def _normalize_weights(self):
+        """Normalize component weights to sum to 1."""
+        total_weight = np.sum(self.weights)
+        if total_weight > 0:
+            self.weights /= total_weight
+
+    def prune_stale_components(self, min_observations=5, max_fusion_ratio=0.4):
+        """
+        Remove Gaussians that are stale outliers.
+
+        A Gaussian is considered stale if:
+        1. It has been observed multiple times (in observation space of measurements)
+        2. But hasn't been fused recently (hasn't matched any incoming Gaussians)
+
+        This means:
+        - Single-visit regions are NEVER pruned (they're just under-explored)
+        - Only Gaussians in re-observed regions that don't match are pruned (likely outliers)
+        """
+
+        if self.n_components == 0:
+            return 0
+
+        # Determine which components to keep
+        keep_mask = []
+        for i in range(self.n_components):
+            obs_count = self.observation_counts[i]
+            fus_count = self.fusion_counts[i]
+
+            # Keep if under-observed OR has good fusion ratio
+            fusion_ratio = fus_count / obs_count if obs_count > 0 else 1.0
+
+            keep = obs_count < min_observations or fusion_ratio >= max_fusion_ratio
+            keep_mask.append(keep)
+
+        keep_mask = np.array(keep_mask)
+        n_pruned = np.sum(~keep_mask)
+
+        if n_pruned == 0:
+            return 0
+
+        # Get indices to keep
+        keep_indices = np.where(keep_mask)[0]
+
+        # Update all arrays
+        self.weights = self.weights[keep_indices]
+        self.means = self.means[keep_indices]
+        self.covariances = self.covariances[keep_indices]
+        self.fusion_counts = [self.fusion_counts[i] for i in keep_indices]
+        self.last_displacements = [self.last_displacements[i] for i in keep_indices]
+        self.n_components = len(keep_indices)
+
+        # Rebuild R-tree with remaining components
+        p = index.Property()
+        p.dimension = 3
+        self.rtree = index.Index(properties=p)
+        for i in range(self.n_components):
+            mean = self.means[i, :3]
+            self.rtree.insert(i, (*mean, *mean))
+
+        # Renormalize weights
+        if self.n_components > 0:
+            self.weights /= np.sum(self.weights)
+
+        rospy.loginfo(
+            "========================================================================="
+        )
+        rospy.loginfo(
+            f"Pruned {n_pruned} stale outlier Gaussians, {self.n_components} remaining"
+        )
+        rospy.loginfo(
+            "========================================================================="
+        )
+        return n_pruned
 
     def _calculate_kl(self, mu1, cov1, mu2, cov2, symmetric=True):
         p = mu1.shape[0]
@@ -103,175 +333,6 @@ class MasterGMM:
         self.fusion_counts[master_idx] += 1
         self.last_displacements[master_idx] = displacement
 
-    def _make_writable(self, gmm):
-        # Create deep writable NumPy copies detached from pybind11
-        gmm.weights_ = np.array(gmm.weights_, copy=True)
-        gmm.means_ = np.array(gmm.means_, copy=True)
-        gmm.covariances_ = np.array(gmm.covariances_, copy=True)
-        return gmm
-
-    def update(self, gmm_measurement, match_threshold=5.0):
-        """Updates the master GMM with a new measurement GMM."""
-
-        gmm_measurement = self._make_writable(gmm_measurement)
-
-        no_incoming_gaussians = len(gmm_measurement.weights_)
-
-        rospy.loginfo(f"Incoming gaussians: {no_incoming_gaussians}")
-
-        if self.n_components == 0:
-            # self.model = self._make_writable(gmm_measurement)
-            self.weights = gmm_measurement.weights_
-            self.means = gmm_measurement.means_
-            self.covariances = gmm_measurement.covariances_
-            self.n_components = gmm_measurement.n_components_
-
-            self.fusion_counts = [1] * self.n_components
-            self.observation_counts = [1] * self.n_components
-            self.last_displacements = [0.0] * self.n_components
-            self.weights /= np.sum(self.weights)
-
-            # Add all new components to the R-tree
-            for i in range(self.n_components):
-                mean = self.means[i, :3]
-                self.rtree.insert(i, (*mean, *mean))
-            return
-
-        # Find candidate master components using the R-tree
-        # These are the Gaussians in the observation space of the incoming measurement
-        min_bounds = gmm_measurement.means_[:, :3].min(axis=0)
-        max_bounds = gmm_measurement.means_[:, :3].max(axis=0)
-        candidate_master_indices = list(self.rtree.intersection((*min_bounds, *max_bounds)))
-
-        # Update observation time for ALL candidates (they're in the re-observed region)
-        for idx in candidate_master_indices:
-            self.observation_counts[idx] += 1
-
-        new_components_to_add = []
-        fused_master_indices = set()
-
-        for j in range(gmm_measurement.n_components_):
-            meas_mu = gmm_measurement.means_[j]
-            meas_cov = gmm_measurement.covariances_[j].reshape(4, 4)
-
-            min_dist = float("inf")
-            best_master_idx = -1
-
-            # Only search within the candidate subset
-            for i in candidate_master_indices:
-                master_mu = self.means[i]
-                master_cov = self.covariances[i].reshape(4, 4)
-                dist = self._calculate_kl(meas_mu, meas_cov, master_mu, master_cov)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_master_idx = i
-
-            if best_master_idx != -1 and min_dist < match_threshold:
-                meas_comp = self._make_writable(gmm_measurement.submap_from_indices([j]))
-                self._fuse_components(best_master_idx, meas_comp)
-                fused_master_indices.add(best_master_idx)
-            else:
-                new_components_to_add.append(self._make_writable(gmm_measurement.submap_from_indices([j])))
-
-        no_novel_points = len(new_components_to_add)
-
-        rospy.loginfo(f"Fused gaussians: {no_incoming_gaussians - no_novel_points}")
-        rospy.loginfo(f"Novel gaussians: {no_novel_points}")
-
-        if new_components_to_add:
-            temp_model = CPUContainerf4(self.n_components)
-            temp_model.weights_ = self.weights
-            temp_model.means_ = self.means
-            temp_model.covariances_ = self.covariances
-
-            old_n_components = self.n_components
-            for new_comp in new_components_to_add:
-                temp_model.merge(new_comp)
-                self.fusion_counts.append(1)
-                self.last_displacements.append(0.0)
-                self.observation_counts.append(1)
-
-            # Extract the updated data back into our numpy arrays
-            self.n_components = temp_model.n_components_
-            self.weights = np.array(temp_model.weights_, copy=True)
-            self.means = np.array(temp_model.means_, copy=True)
-            self.covariances = np.array(temp_model.covariances_, copy=True)
-
-            # Add the newly created components to the R-tree
-            new_n_components = self.n_components
-            for i in range(old_n_components, new_n_components):
-                mean = self.means[i, :3]
-                self.rtree.insert(i, (*mean, *mean))
-
-        rospy.loginfo("merged not matched gaussians")
-
-        # Normalize weights
-        total_weight = np.sum(self.weights)
-        if total_weight > 0:
-            self.weights /= total_weight
-
-    def prune_stale_components(self, min_observations=5, max_fusion_ratio=0.4):
-        """
-        Remove Gaussians that are stale outliers.
-        
-        A Gaussian is considered stale if:
-        1. It has been observed multiple times (in observation space of measurements)
-        2. But hasn't been fused recently (hasn't matched any incoming Gaussians)
-        
-        This means:
-        - Single-visit regions are NEVER pruned (they're just under-explored)
-        - Only Gaussians in re-observed regions that don't match are pruned (likely outliers)
-        """
-        
-        if self.n_components == 0:
-            return 0
-        
-        # Determine which components to keep
-        keep_mask = []
-        for i in range(self.n_components):
-            obs_count = self.observation_counts[i]
-            fus_count = self.fusion_counts[i]
-            
-            # Keep if under-observed OR has good fusion ratio
-            fusion_ratio = fus_count / obs_count if obs_count > 0 else 1.0
-            
-            keep = obs_count < min_observations or fusion_ratio >= max_fusion_ratio
-            keep_mask.append(keep)
-        
-        keep_mask = np.array(keep_mask)
-        n_pruned = np.sum(~keep_mask)
-        
-        if n_pruned == 0:
-            return 0
-        
-        # Get indices to keep
-        keep_indices = np.where(keep_mask)[0]
-        
-        # Update all arrays
-        self.weights = self.weights[keep_indices]
-        self.means = self.means[keep_indices]
-        self.covariances = self.covariances[keep_indices]
-        self.fusion_counts = [self.fusion_counts[i] for i in keep_indices]
-        self.last_displacements = [self.last_displacements[i] for i in keep_indices]
-        self.n_components = len(keep_indices)
-        
-        # Rebuild R-tree with remaining components
-        p = index.Property()
-        p.dimension = 3
-        self.rtree = index.Index(properties=p)
-        for i in range(self.n_components):
-            mean = self.means[i, :3]
-            self.rtree.insert(i, (*mean, *mean))
-        
-        # Renormalize weights
-        if self.n_components > 0:
-            self.weights /= np.sum(self.weights)
-        
-        rospy.loginfo("========================================================================")
-        rospy.loginfo(f"Pruned {n_pruned} stale outlier Gaussians, {self.n_components} remaining")
-        rospy.loginfo("========================================================================")
-        return n_pruned
-
 
 class SOGMMROSNode:
     """
@@ -279,29 +340,53 @@ class SOGMMROSNode:
     """
 
     def __init__(self):
+        """Initialize the SOGMM ROS Node with parameters, publishers, subscribers, and core components."""
         # Initialize ROS node
         rospy.init_node("sogmm_ros_node", anonymous=True)
 
-        # Parameters
+        # Load ROS parameters
+        self._load_parameters()
+
+        # Initialize publishers and subscribers
+        self._setup_communication()
+
+        # Initialize core components
+        self._setup_core_components()
+
+        # Log initialization summary
+        self._log_initialization()
+
+    def _load_parameters(self):
+        """Load all ROS parameters with default values."""
+        # SOGMM algorithm parameters
         self.bandwidth = rospy.get_param("~bandwidth", 0.02)
-        self.visualization_scale = rospy.get_param("~visualization_scale", 2.0)
-        self.processing_decimation = rospy.get_param("~processing_decimation", 1)
+        self.kl_div_match_thresh = rospy.get_param("~kl_div_match_thresh", 5.0)
+        self.l_thres = 0.05
+
+        # Visualization parameters
         self.enable_visualization = rospy.get_param("~enable_visualization", True)
-        self.target_frame = rospy.get_param("~target_frame", "map")
-        self.min_novel_points = rospy.get_param("~min_novel_points", 500)
+        self.visualization_scale = rospy.get_param("~visualization_scale", 2.0)
         self.color_by = rospy.get_param(
             "~color_by", "intensity"
-        )  # Options: intensity, confidence, stability
-        self.kl_div_match_thresh = rospy.get_param("~kl_div_match_thresh", 5.0)
+        )  # Options: intensity, confidence, stability, combined
+        self.add_metric_text = rospy.get_param("~add_metric_text", True)
+
+        # Processing parameters
+        self.processing_decimation = rospy.get_param("~processing_decimation", 1)
+        self.min_novel_points = rospy.get_param("~min_novel_points", 500)
+        self.target_frame = rospy.get_param("~target_frame", "map")
+
+        # Pruning parameters
         self.max_fusion_ratio = rospy.get_param("~max_fusion_ratio", 0.4)
         self.prune_min_observations = rospy.get_param("~prune_min_observations", 5)
         self.prune_interval_frames = rospy.get_param("~prune_interval_frames", 10)
 
+    def _setup_communication(self):
+        """Initialize ROS publishers and subscribers."""
         # Publishers
         self.marker_pub = rospy.Publisher(
             "/starling1/mpa/gmm_markers", MarkerArray, queue_size=1
         )
-
         self.gmm_size_pub = rospy.Publisher(
             "/starling1/mpa/gmm_size", Int32, queue_size=1
         )
@@ -311,32 +396,44 @@ class SOGMMROSNode:
             "/starling1/mpa/tof_pc", PointCloud2, self.pointcloud_callback, queue_size=1
         )
 
+        # TF setup
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        self.frame_count = 0
-
-        self.l_thres = 0.05
-        self.novel_pts_placeholder = None
+    def _setup_core_components(self):
+        """Initialize core SOGMM processing components and threading."""
+        # Core SOGMM components
         self.master_gmm = MasterGMM()
         self.learner = GPUFit(self.bandwidth)
         self.inference = GPUInference()
+
+        # Processing state
+        self.frame_count = 0
+        self.novel_pts_placeholder = None
 
         # Threading for non-blocking processing
         self.processing_lock = threading.Lock()
         self.latest_pointcloud = None
         self.processing_thread = None
 
+        # Timing
         self.last_prune_time = rospy.Time.now().to_sec()
 
+    def _log_initialization(self):
+        """Log initialization parameters for debugging."""
         rospy.loginfo("SOGMM ROS Node initialized with parameters:")
         rospy.loginfo(f"  - Bandwidth: {self.bandwidth}")
-        rospy.loginfo(f"  - Visualization scale: {self.visualization_scale}")
+        rospy.loginfo(f"  - KL divergence match threshold: {self.kl_div_match_thresh}")
+        rospy.loginfo(f"  - Target frame: {self.target_frame}")
         rospy.loginfo(f"  - Processing decimation: {self.processing_decimation}")
+        rospy.loginfo(f"  - Visualization enabled: {self.enable_visualization}")
+        rospy.loginfo(f"  - Visualization scale: {self.visualization_scale}")
         rospy.loginfo(f"  - Color by: {self.color_by}")
-        rospy.loginfo(f"  - Prune min observations: {self.prune_min_observations}")
-        rospy.loginfo(f"  - Prune max fusion ratio: {self.max_fusion_ratio}")
-        rospy.loginfo(f"  - Prune interval (frames): {self.prune_interval_frames}")
+        rospy.loginfo(f"  - Add metric text: {self.add_metric_text}")
+        rospy.loginfo("  - Pruning parameters:")
+        rospy.loginfo(f"    * Min observations: {self.prune_min_observations}")
+        rospy.loginfo(f"    * Max fusion ratio: {self.max_fusion_ratio}")
+        rospy.loginfo(f"    * Prune interval (frames): {self.prune_interval_frames}")
 
     def pointcloud_callback(self, msg):
         """
@@ -377,7 +474,7 @@ class SOGMMROSNode:
 
             # 2. Update the master GMM with the new local measurement
             self.master_gmm.update(
-                gmm_measurement=local_model_cpu, 
+                gmm_measurement=local_model_cpu,
                 match_threshold=self.kl_div_match_thresh,
             )
 
@@ -386,7 +483,7 @@ class SOGMMROSNode:
             if self.frame_count % self.prune_interval_frames == 0:
                 self.master_gmm.prune_stale_components(
                     min_observations=self.prune_min_observations,
-                    max_fusion_ratio=self.max_fusion_ratio
+                    max_fusion_ratio=self.max_fusion_ratio,
                 )
 
             gmm_time = time.time() - gmm_start_time
@@ -443,9 +540,7 @@ class SOGMMROSNode:
             # Apply transformation: R * points + t
             points_3d = (rotation_matrix @ points_3d_original.T).T + translation
 
-            rospy.loginfo(
-                f"Successfully transformed point cloud from {msg.header.frame_id} to map frame"
-            )
+            # rospy.loginfo(f"Successfully transformed point cloud from {msg.header.frame_id} to map frame")
 
         except Exception as e:
             rospy.logwarn("Transform failed: %s, using original points" % str(e))
@@ -520,34 +615,34 @@ class SOGMMROSNode:
 
         # Normalize values for coloring based on selected mode
         norm_values = []
-        
+
         if self.color_by == "confidence":
             # Apply logarithmic scaling to fusion counts
             log_counts = [np.log1p(c) for c in master_gmm.fusion_counts]
             max_log_count = max(log_counts) if log_counts else 1.0
             norm_values = [c / max(1.0, max_log_count) for c in log_counts]
-            
+
         elif self.color_by == "stability":
             # Stability based on displacement only
             for idx in range(len(master_gmm.means)):
                 displacement = master_gmm.last_displacements[idx]
-                
+
                 # Score inversely proportional to displacement
                 # Lower displacement = higher stability score
                 score = np.exp(-displacement / 0.05)  # 0.05 = threshold for "small"
                 norm_values.append(score)
-                
+
             # Normalize to 0-1 range
             if norm_values:
                 max_score = max(norm_values) if max(norm_values) > 0 else 1.0
                 norm_values = [s / max_score for s in norm_values]
-                
+
         elif self.color_by == "combined":
             # Combined stability metric: fusion_count AND displacement
             for idx in range(len(master_gmm.means)):
                 fusion_count = master_gmm.fusion_counts[idx]
                 displacement = master_gmm.last_displacements[idx]
-                
+
                 if fusion_count <= 1:
                     # Unverified (only seen once) - score = 0
                     score = 0.0
@@ -560,12 +655,16 @@ class SOGMMROSNode:
                 else:
                     # Good stability: small non-zero displacement
                     # Higher fusion count = higher score
-                    displacement_score = np.exp(-displacement / 0.05)  # 0.05 = threshold for "small"
-                    fusion_score = np.log1p(fusion_count) / np.log1p(10)  # Normalized to ~0-1
+                    displacement_score = np.exp(
+                        -displacement / 0.05
+                    )  # 0.05 = threshold for "small"
+                    fusion_score = np.log1p(fusion_count) / np.log1p(
+                        10
+                    )  # Normalized to ~0-1
                     score = fusion_score * displacement_score
-                    
+
                 norm_values.append(score)
-                
+
             # Normalize to 0-1 range
             if norm_values:
                 max_score = max(norm_values) if max(norm_values) > 0 else 1.0
@@ -640,7 +739,7 @@ class SOGMMROSNode:
                 marker.color.g = color[1]
                 marker.color.b = color[2]
                 marker.color.a = 0.8
-                
+
             elif self.color_by == "stability":
                 # Colormap: Red (unstable) -> Green (stable)
                 color = cm.RdYlGn(norm_values[i])
@@ -648,12 +747,12 @@ class SOGMMROSNode:
                 marker.color.g = color[1]
                 marker.color.b = color[2]
                 marker.color.a = 0.8
-                
+
             elif self.color_by == "combined":
                 # Custom color scheme for combined metric
                 fusion_count = master_gmm.fusion_counts[i]
                 displacement = master_gmm.last_displacements[i]
-                
+
                 if fusion_count <= 1:
                     # Red = unverified (only seen once)
                     marker.color.r = 1.0
@@ -680,7 +779,7 @@ class SOGMMROSNode:
                     marker.color.g = float(green_intensity)
                     marker.color.b = 0.0
                     marker.color.a = 0.8
-                    
+
             else:  # Default to intensity
                 intensity = master_gmm.means[i, 3]
                 gray_val = float(intensity)
@@ -694,48 +793,49 @@ class SOGMMROSNode:
             marker_array.markers.append(marker)
 
             # Add text marker for metric value
-            text_marker = Marker()
-            text_marker.header.frame_id = frame_id
-            text_marker.header.stamp = timestamp
-            text_marker.ns = "sogmm_text"
-            text_marker.id = i
-            text_marker.type = Marker.TEXT_VIEW_FACING
-            text_marker.action = Marker.ADD
+            if self.add_metric_text:
+                text_marker = Marker()
+                text_marker.header.frame_id = frame_id
+                text_marker.header.stamp = timestamp
+                text_marker.ns = "sogmm_text"
+                text_marker.id = i
+                text_marker.type = Marker.TEXT_VIEW_FACING
+                text_marker.action = Marker.ADD
 
-            # Position text slightly above the ellipsoid
-            text_marker.pose.position.x = float(mean[0])
-            text_marker.pose.position.y = float(mean[1])
-            text_marker.pose.position.z = float(mean[2])
+                # Position text slightly above the ellipsoid
+                text_marker.pose.position.x = float(mean[0])
+                text_marker.pose.position.y = float(mean[1])
+                text_marker.pose.position.z = float(mean[2])
 
-            text_marker.pose.orientation.w = 1.0
+                text_marker.pose.orientation.w = 1.0
 
-            # Set text content based on color mode
-            if self.color_by == "confidence":
-                count = master_gmm.fusion_counts[i]
-                text_marker.text = f"C:{count}"
-                # text_marker.text = f"{norm_values[i]}"
-            elif self.color_by == "stability":
-                disp = master_gmm.last_displacements[i]
-                text_marker.text = f"D:{disp:.3f}"
-            elif self.color_by == "combined":
-                count = master_gmm.fusion_counts[i]
-                disp = master_gmm.last_displacements[i]
-                text_marker.text = f"C:{count} D:{disp:.3f}"
-            else:
-                text_marker.text = f"{master_gmm.means[i, 3]:.2f}"
+                # Set text content based on color mode
+                if self.color_by == "confidence":
+                    count = master_gmm.fusion_counts[i]
+                    text_marker.text = f"C:{count}"
+                    # text_marker.text = f"{norm_values[i]}"
+                elif self.color_by == "stability":
+                    disp = master_gmm.last_displacements[i]
+                    text_marker.text = f"D:{disp:.3f}"
+                elif self.color_by == "combined":
+                    count = master_gmm.fusion_counts[i]
+                    disp = master_gmm.last_displacements[i]
+                    text_marker.text = f"C:{count} D:{disp:.3f}"
+                else:
+                    text_marker.text = f"{master_gmm.means[i, 3]:.2f}"
 
-            # Set text size
-            text_marker.scale.z = 0.05  # Text height
+                # Set text size
+                text_marker.scale.z = 0.05  # Text height
 
-            # Set text color (white with good visibility)
-            text_marker.color.r = 1.0
-            text_marker.color.g = 1.0
-            text_marker.color.b = 1.0
-            text_marker.color.a = 1.0
+                # Set text color (white with good visibility)
+                text_marker.color.r = 1.0
+                text_marker.color.g = 1.0
+                text_marker.color.b = 1.0
+                text_marker.color.a = 1.0
 
-            text_marker.lifetime = rospy.Duration(2.0)
+                text_marker.lifetime = rospy.Duration(2.0)
 
-            marker_array.markers.append(text_marker)
+                marker_array.markers.append(text_marker)
 
         # Clear old markers if we have fewer components now
         if hasattr(self, "last_marker_count"):
