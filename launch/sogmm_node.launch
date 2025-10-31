@@ -2,11 +2,12 @@
 <launch>
     <!-- SOGMM ROS Node Launch File -->
 
-    <arg name="venv" value="/home/niedzial/gira/gira3d-reconstruction/.venv/bin/python" />
-
-    <node name="sogmm_odom" pkg="gmms_exploration" type="sogmm_odometry_node.py"/>
+    <node name="sogmm_odom" pkg="gmms_exploration" type="sogmm_odometry_node.py"
+          launch-prefix="bash -c 'cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">
+    </node>
     
-    <node name="sogmm_node" pkg="gmms_exploration" type="sogmm_ros_node.py" output="screen" launch-prefix = "$(arg venv)">
+    <node name="sogmm_node" pkg="gmms_exploration" type="sogmm_ros_node.py" output="screen"
+          launch-prefix="bash -c 'cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">
         <param name="bandwidth" value="0.02" />
         <param name="max_components" value="50" />
         <param name="min_points_per_component" value="100" />
@@ -16,10 +17,8 @@
         <param name="kl_div_match_thresh" value="10.0" />
 
         <param name="color_by" value="confidence" /> 
-        <!-- Options: intensity, confidence, stability -->
     </node>
     
-    <!-- Optional: Launch RViz with custom config -->
     <arg name="rviz" default="true" />
     <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find gmms_exploration)/config/sogmm_rviz.rviz" />
     
