@@ -45,8 +45,7 @@ class MasterGMM:
 
         self.fusion_counts = []
         self.last_displacements = []
-        self.last_fusion_time = []
-        self.last_observation_time = []
+        self.observation_counts = []
 
         # R-tree for spatial indexing of GMM components
         p = index.Property()
@@ -111,11 +110,8 @@ class MasterGMM:
         gmm.covariances_ = np.array(gmm.covariances_, copy=True)
         return gmm
 
-    def update(self, gmm_measurement, match_threshold=5.0, current_time=None):
+    def update(self, gmm_measurement, match_threshold=5.0):
         """Updates the master GMM with a new measurement GMM."""
-        
-        if current_time is None:
-            current_time = rospy.Time.now().to_sec()
 
         gmm_measurement = self._make_writable(gmm_measurement)
 
@@ -131,9 +127,8 @@ class MasterGMM:
             self.n_components = gmm_measurement.n_components_
 
             self.fusion_counts = [1] * self.n_components
+            self.observation_counts = [1] * self.n_components
             self.last_displacements = [0.0] * self.n_components
-            self.last_fusion_time = [current_time] * self.n_components
-            self.last_observation_time = [current_time] * self.n_components
             self.weights /= np.sum(self.weights)
 
             # Add all new components to the R-tree
@@ -150,7 +145,7 @@ class MasterGMM:
 
         # Update observation time for ALL candidates (they're in the re-observed region)
         for idx in candidate_master_indices:
-            self.last_observation_time[idx] = current_time
+            self.observation_counts[idx] += 1
 
         new_components_to_add = []
         fused_master_indices = set()
@@ -174,7 +169,6 @@ class MasterGMM:
             if best_master_idx != -1 and min_dist < match_threshold:
                 meas_comp = self._make_writable(gmm_measurement.submap_from_indices([j]))
                 self._fuse_components(best_master_idx, meas_comp)
-                self.last_fusion_time[best_master_idx] = current_time
                 fused_master_indices.add(best_master_idx)
             else:
                 new_components_to_add.append(self._make_writable(gmm_measurement.submap_from_indices([j])))
@@ -195,8 +189,7 @@ class MasterGMM:
                 temp_model.merge(new_comp)
                 self.fusion_counts.append(1)
                 self.last_displacements.append(0.0)
-                self.last_fusion_time.append(current_time)
-                self.last_observation_time.append(current_time)
+                self.observation_counts.append(1)
 
             # Extract the updated data back into our numpy arrays
             self.n_components = temp_model.n_components_
@@ -217,7 +210,7 @@ class MasterGMM:
         if total_weight > 0:
             self.weights /= total_weight
 
-    def prune_stale_components(self, stale_threshold_seconds=30.0, min_observations=2):
+    def prune_stale_components(self, min_observations=5, max_fusion_ratio=0.4):
         """
         Remove Gaussians that are stale outliers.
         
@@ -233,29 +226,16 @@ class MasterGMM:
         if self.n_components == 0:
             return 0
         
-        current_time = rospy.Time.now().to_sec()
-        
         # Determine which components to keep
         keep_mask = []
         for i in range(self.n_components):
-            time_since_last_fusion = current_time - self.last_fusion_time[i]
-            time_since_last_observation = current_time - self.last_observation_time[i]
-            observation_count = self.fusion_counts[i]  # Proxy for "how many times observed"
+            obs_count = self.observation_counts[i]
+            fus_count = self.fusion_counts[i]
             
-            # Keep if ANY of these conditions are true:
-            # 1. Only observed once (under-explored region, keep it)
-            # 2. Recently observed (in current observation space)
-            # 3. Recently fused (actively being updated)
+            # Keep if under-observed OR has good fusion ratio
+            fusion_ratio = fus_count / obs_count if obs_count > 0 else 1.0
             
-            keep = (
-                observation_count < min_observations or  # Under-explored, keep
-                time_since_last_observation < stale_threshold_seconds or  # Recently observed
-                time_since_last_fusion < stale_threshold_seconds  # Recently fused
-            )
-            
-            # Prune only if: observed multiple times + not observed recently + not fused recently
-            # This catches outliers: things that were in observation space but never matched
-            
+            keep = obs_count < min_observations or fusion_ratio >= max_fusion_ratio
             keep_mask.append(keep)
         
         keep_mask = np.array(keep_mask)
@@ -273,8 +253,6 @@ class MasterGMM:
         self.covariances = self.covariances[keep_indices]
         self.fusion_counts = [self.fusion_counts[i] for i in keep_indices]
         self.last_displacements = [self.last_displacements[i] for i in keep_indices]
-        self.last_fusion_time = [self.last_fusion_time[i] for i in keep_indices]
-        self.last_observation_time = [self.last_observation_time[i] for i in keep_indices]
         self.n_components = len(keep_indices)
         
         # Rebuild R-tree with remaining components
@@ -289,7 +267,9 @@ class MasterGMM:
         if self.n_components > 0:
             self.weights /= np.sum(self.weights)
         
+        rospy.loginfo("========================================================================")
         rospy.loginfo(f"Pruned {n_pruned} stale outlier Gaussians, {self.n_components} remaining")
+        rospy.loginfo("========================================================================")
         return n_pruned
 
 
@@ -313,9 +293,9 @@ class SOGMMROSNode:
             "~color_by", "intensity"
         )  # Options: intensity, confidence, stability
         self.kl_div_match_thresh = rospy.get_param("~kl_div_match_thresh", 5.0)
-        self.prune_stale_threshold = rospy.get_param("~prune_stale_threshold_seconds", 30.0)
-        self.prune_min_observations = rospy.get_param("~prune_min_observations", 2)
-        self.prune_interval = rospy.get_param("~prune_interval_seconds", 5.0)
+        self.max_fusion_ratio = rospy.get_param("~max_fusion_ratio", 0.4)
+        self.prune_min_observations = rospy.get_param("~prune_min_observations", 5)
+        self.prune_interval_frames = rospy.get_param("~prune_interval_frames", 10)
 
         # Publishers
         self.marker_pub = rospy.Publisher(
@@ -333,6 +313,8 @@ class SOGMMROSNode:
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+
+        self.frame_count = 0
 
         self.l_thres = 0.05
         self.novel_pts_placeholder = None
@@ -352,8 +334,9 @@ class SOGMMROSNode:
         rospy.loginfo(f"  - Visualization scale: {self.visualization_scale}")
         rospy.loginfo(f"  - Processing decimation: {self.processing_decimation}")
         rospy.loginfo(f"  - Color by: {self.color_by}")
-        rospy.loginfo(f"  - Prune stale threshold: {self.prune_stale_threshold}s")
         rospy.loginfo(f"  - Prune min observations: {self.prune_min_observations}")
+        rospy.loginfo(f"  - Prune max fusion ratio: {self.max_fusion_ratio}")
+        rospy.loginfo(f"  - Prune interval (frames): {self.prune_interval_frames}")
 
     def pointcloud_callback(self, msg):
         """
@@ -393,20 +376,18 @@ class SOGMMROSNode:
             local_model_gpu.to_host(local_model_cpu)
 
             # 2. Update the master GMM with the new local measurement
-            current_time = msg.header.stamp.to_sec()
             self.master_gmm.update(
                 gmm_measurement=local_model_cpu, 
                 match_threshold=self.kl_div_match_thresh,
-                current_time=current_time
             )
 
-            # 3. Periodically prune stale components
-            if current_time - self.last_prune_time > self.prune_interval:
+            # 3. Periodically prune outliers (every N frames)
+            self.frame_count += 1
+            if self.frame_count % self.prune_interval_frames == 0:
                 self.master_gmm.prune_stale_components(
-                    stale_threshold_seconds=self.prune_stale_threshold,
-                    min_observations=self.prune_min_observations
+                    min_observations=self.prune_min_observations,
+                    max_fusion_ratio=self.max_fusion_ratio
                 )
-                self.last_prune_time = current_time
 
             gmm_time = time.time() - gmm_start_time
 
