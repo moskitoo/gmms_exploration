@@ -438,12 +438,13 @@ class SOGMMROSNode:
 
         norm_disps = []
         if self.color_by == "stability":
-            max_disp = (
-                max(master_gmm.last_displacements)
-                if master_gmm.last_displacements
+            log_counts = [np.log1p(c) for c in master_gmm.last_displacements]
+            max_log_count = (
+                max(log_counts)
+                if log_counts
                 else 1.0
             )
-            norm_disps = [d / max(1.0, max_disp) for d in master_gmm.last_displacements]
+            norm_disps = [d / max(1.0, max_log_count) for d in log_counts]
 
         for i in range(len(master_gmm.means)):
             # ...existing code for sphere marker...
