@@ -8,18 +8,30 @@
     
     <node name="sogmm_node" pkg="gmms_exploration" type="sogmm_ros_node.py" output="screen"
           launch-prefix="bash -c 'cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">
+        
+        <!-- SOGMM Algorithm Parameters -->
         <param name="bandwidth" value="0.02" />
-        <param name="max_components" value="50" />
-        <param name="min_points_per_component" value="100" />
-        <param name="visualization_scale" value="2.0" />
-        <param name="processing_decimation" value="1" />
+        <param name="kl_div_match_thresh" value="50.0" />
+        
+        <!-- Visualization Parameters -->
         <param name="enable_visualization" value="true" />
-        <param name="kl_div_match_thresh" value="10.0" />
-
-        <param name="color_by" value="confidence" /> 
+        <param name="visualization_scale" value="2.0" />
+        <param name="color_by" value="combined" />
+        <!-- Options: intensity, confidence, stability, combined -->
+        <param name="add_metric_text" value="false" />
+        
+        <!-- Processing Parameters -->
+        <param name="processing_decimation" value="1" />
+        <param name="min_novel_points" value="500" />
+        <param name="target_frame" value="map" />
+        
+        <!-- Pruning Parameters -->
+        <param name="max_fusion_ratio" value="0.4" />
+        <param name="prune_min_observations" value="5" />
+        <param name="prune_interval_frames" value="10" />
     </node>
     
-    <arg name="rviz" default="true" />
+    <arg name="rviz" default="false" />
     <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find gmms_exploration)/config/sogmm_rviz.rviz" />
     
 </launch>
