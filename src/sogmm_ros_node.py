@@ -29,7 +29,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 class MasterGMM:
     def __init__(self):
-        # self.model = None
+        self.model = None
         # Store GMM components as numpy arrays we control
         self.weights = None
         self.means = None
@@ -57,24 +57,25 @@ class MasterGMM:
         rospy.loginfo(f"Processing {n_incoming} incoming Gaussians")
         
         # Handle empty master GMM - initialize with first measurement
-        if self.n_components == 0:
+        if self.model is None:
             self._initialize_from_measurement(gmm_measurement)
             return
         
         candidate_indices = self._find_spatial_candidates(gmm_measurement)
         self._update_observation_counts(candidate_indices)
         
-        n_fused, new_components = self._match_and_fuse_components(
+        n_fused, new_components_ids = self._match_and_fuse_components(
             gmm_measurement, candidate_indices, match_threshold
         )
         
-        if new_components:
-            self._add_new_components(new_components)
+        if len(new_components_ids) > 0:
+            self._add_new_components(gmm_measurement, new_components_ids)
         
-        self._normalize_weights()
+        # self._normalize_weights()
+        self.model.normalize_weights()
         
         # Log results
-        n_novel = len(new_components)
+        n_novel = len(new_components_ids)
         rospy.loginfo(f"Fused: {n_fused}, Novel: {n_novel}")
 
 
@@ -87,22 +88,24 @@ class MasterGMM:
 
     def _initialize_from_measurement(self, gmm_measurement):
         """Initialize master GMM from first measurement."""
-        self.weights = np.array(gmm_measurement.weights_, copy=True)
-        self.means = np.array(gmm_measurement.means_, copy=True) 
-        self.covariances = np.array(gmm_measurement.covariances_, copy=True)
-        self.n_components = gmm_measurement.n_components_
+        # self.weights = np.array(gmm_measurement.weights_, copy=True)
+        # self.means = np.array(gmm_measurement.means_, copy=True) 
+        # self.covariances = np.array(gmm_measurement.covariances_, copy=True)
+        # self.n_components = gmm_measurement.n_components_
+
+        self.model = CPUContainerf4(gmm_measurement)
         
         # Initialize tracking arrays
-        self.fusion_counts = [1] * self.n_components
-        self.observation_counts = [1] * self.n_components
-        self.last_displacements = [0.0] * self.n_components
+        self.fusion_counts = [1] * self.model.n_components
+        self.observation_counts = [1] * self.model.n_components
+        self.last_displacements = [0.0] * self.model.n_components
         
         # Build spatial index
-        for i in range(self.n_components):
-            mean = self.means[i, :3]
+        for i in range(self.model.n_components):
+            mean = self.model.means[i, :3]
             self.rtree.insert(i, (*mean, *mean))
         
-        self._normalize_weights()
+        # self._normalize_weights() its probably not needed because newly created model will alreadyhave a normalised weightse
 
     def _find_spatial_candidates(self, gmm_measurement):
         """Find master components spatially overlapping with measurement."""
@@ -120,30 +123,196 @@ class MasterGMM:
 
     def _match_and_fuse_components(self, gmm_measurement, candidate_indices, match_threshold):
         """
-        Match measurement components to master components and fuse them.
+        Match measurement components to master components and fuse them using vectorized operations.
         
         Returns:
             tuple: (number_fused, list_of_unmatched_components)
         """
-        fused_master_indices = set()
-        unmatched_components = []
+        if not candidate_indices:
+            return 0, list(range(gmm_measurement.n_components_))
+
+        # 1. Create a subset of the master model for matching
+        model_subset = self.model.submap_from_indices(candidate_indices)
+
+        # 2. Calculate the pairwise KL divergence matrix
+        kl_matrix = self._calculate_kl_matrix(
+            gmm_measurement.means_, gmm_measurement.covariances_,
+            model_subset.means_, model_subset.covariances_
+        )
+
+        # 3. Find the best matches for each measurement component
+        best_master_indices_in_subset = np.argmin(kl_matrix, axis=1)
+        min_kl_values = np.min(kl_matrix, axis=1)
+
+        # 4. Identify which measurement components have a match below the threshold
+        matched_mask = min_kl_values < match_threshold
+        meas_indices_to_fuse = np.where(matched_mask)[0]
         
-        for j in range(gmm_measurement.n_components_):
-            best_match_idx = self._find_best_match(
-                gmm_measurement, j, candidate_indices, match_threshold
-            )
+        unmatched_measurement_indices = np.where(~matched_mask)[0].tolist()
+        
+        if len(meas_indices_to_fuse) == 0:
+            return 0, unmatched_measurement_indices
+
+        # 5. Get the corresponding master components to fuse with
+        subset_indices_to_fuse_with = best_master_indices_in_subset[matched_mask]
+        # Map subset indices back to original master model indices
+        master_indices_to_fuse_with = np.array(candidate_indices)[subset_indices_to_fuse_with]
+
+        # 6. Perform vectorized fusion for all matched pairs
+        self._fuse_components_vectorized(master_indices_to_fuse_with, gmm_measurement, meas_indices_to_fuse)
+        
+        # The number of fused components is the number of unique master components that were updated
+        n_fused = len(np.unique(master_indices_to_fuse_with))
+        
+        return n_fused, unmatched_measurement_indices
+    
+    def _fuse_components_vectorized(self, master_indices, meas_gmm, meas_indices):
+        """
+        Vectorized fusion of multiple measurement components into master components.
+        """
+        # --- Gather data for all components to be fused ---
+        # Master components
+        w_i = self.model.weights[master_indices]
+        mu_i = self.model.means[master_indices]
+        cov_i = self.model.covariances[master_indices].reshape(-1, 4, 4)
+
+        # Measurement components
+        meas_comps_to_fuse = meas_gmm.submap_from_indices(meas_indices)
+        w_j = meas_comps_to_fuse.weights_
+        mu_j = meas_comps_to_fuse.means_
+        cov_j = meas_comps_to_fuse.covariances_.reshape(-1, 4, 4)
+
+        # --- Perform fusion calculations in a vectorized manner ---
+        w_new = w_i + w_j
+        mu_new = (w_i[:, np.newaxis] * mu_i + w_j[:, np.newaxis] * mu_j) / w_new[:, np.newaxis]
+
+        diff_i = mu_i - mu_new
+        diff_j = mu_j - mu_new
+
+        # Use einsum for batched outer product: diff @ diff.T
+        # '...i,...j->...ij' computes the outer product for each vector in the batch
+        outer_i = np.einsum('...i,...j->...ij', diff_i, diff_i)
+        outer_j = np.einsum('...i,...j->...ij', diff_j, diff_j)
+
+        cov_new = (w_i[:, np.newaxis, np.newaxis] * (cov_i + outer_i) + 
+                   w_j[:, np.newaxis, np.newaxis] * (cov_j + outer_j)) / w_new[:, np.newaxis, np.newaxis]
+
+        # --- Update master model state ---
+        # This is tricky because multiple `meas_indices` can map to the same `master_index`.
+        # We need to sum the contributions for each unique master component.
+        unique_master_indices, inverse_indices = np.unique(master_indices, return_inverse=True)
+
+        # Update weights by adding all contributions from new measurements
+        np.add.at(self.model.weights, master_indices, w_j)
+
+        # Update means and covariances using the final fused values
+        # For master components matched multiple times, this uses the result from the *last* match.
+        # A more complex (but slower) approach would be to iteratively fuse. This is a good approximation.
+        self.model.means[master_indices] = mu_new
+        self.model.covariances[master_indices] = cov_new.reshape(-1, 16)
+
+        # Update fusion counts
+        np.add.at(self.fusion_counts, master_indices, 1)
+
+        # Update displacements (store the last displacement for each master component)
+        displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
+        
+        # Ensure last_displacements is a numpy array for advanced indexing
+        if not isinstance(self.last_displacements, np.ndarray):
+            self.last_displacements = np.array(self.last_displacements)
             
-            if best_match_idx is not None:
-                # Fuse with matched master component
-                meas_comp = self._make_writable(gmm_measurement.submap_from_indices([j]))
-                self._fuse_components(best_match_idx, meas_comp)
-                fused_master_indices.add(best_match_idx)
-            else:
-                # No match found - add to unmatched list
-                unmatched_comp = self._make_writable(gmm_measurement.submap_from_indices([j]))
-                unmatched_components.append(unmatched_comp)
+        self.last_displacements[master_indices] = displacements
+    
+    def _calculate_kl_matrix(self, means1, covs1, means2, covs2, symmetric=True):
+        """
+        Calculates a matrix of pairwise KL divergences between two sets of Gaussians.
         
-        return len(fused_master_indices), unmatched_components
+        Args:
+            means1 (np.ndarray): Means of the first set (N, D).
+            covs1 (np.ndarray): Covariances of the first set (N, D*D).
+            means2 (np.ndarray): Means of the second set (M, D).
+            covs2 (np.ndarray): Covariances of the second set (M, D*D).
+        
+        Returns:
+            np.ndarray: A (N, M) matrix where entry (i, j) is the KL divergence
+                        between Gaussian i from set 1 and Gaussian j from set 2.
+        """
+        n1, d = means1.shape
+        n2, _ = means2.shape
+        
+        # Reshape flattened covariances to (N, D, D) matrices
+        covs1_mat = covs1.reshape(n1, d, d)
+        covs2_mat = covs2.reshape(n2, d, d)
+
+        try:
+            # Pre-compute inverses and log-determinants for all components in set 2
+            inv_covs2 = np.linalg.inv(covs2_mat)
+            _, log_det_covs2 = np.linalg.slogdet(covs2_mat)
+            
+            # Pre-compute log-determinants for all components in set 1
+            _, log_det_covs1 = np.linalg.slogdet(covs1_mat)
+
+            # Expand dimensions for broadcasting
+            m1_exp = means1[:, np.newaxis, :]          # (N, 1, D)
+            c1_exp = covs1_mat[:, np.newaxis, :, :]    # (N, 1, D, D)
+            m2_exp = means2[np.newaxis, :, :]          # (1, M, D)
+            inv_c2_exp = inv_covs2[np.newaxis, :, :, :]# (1, M, D, D)
+
+            # Vectorized computation of KL divergence terms
+            # Term 1: Trace term
+            trace_term = np.einsum('...ij,...ji->...', inv_c2_exp, c1_exp) # (N, M)
+            
+            # Term 2: Mahalanobis distance term
+            mean_diff = m2_exp - m1_exp # (N, M, D)
+            mahalanobis_term = np.einsum('...i,...ij,...j->...', mean_diff, inv_c2_exp, mean_diff) # (N, M)
+
+            # Term 3: Log determinant term
+            log_det_term = log_det_covs2[np.newaxis, :] - log_det_covs1[:, np.newaxis] # (N, M)
+
+            # KL divergence D(1 || 2)
+            kl_12 = 0.5 * (trace_term + mahalanobis_term - d + log_det_term)
+
+            if not symmetric:
+                return kl_12
+            
+            # For symmetric KL, calculate D(2 || 1)
+            inv_covs1 = np.linalg.inv(covs1_mat)
+            inv_c1_exp = inv_covs1[:, np.newaxis, :, :] # (N, 1, D, D)
+            c2_exp = covs2_mat[np.newaxis, :, :, :]     # (1, M, D, D)
+            
+            trace_term_21 = np.einsum('...ij,...ji->...', inv_c1_exp, c2_exp)
+            mahalanobis_term_21 = np.einsum('...i,...ij,...j->...', -mean_diff, inv_c1_exp, -mean_diff)
+            log_det_term_21 = -log_det_term
+
+            kl_21 = 0.5 * (trace_term_21 + mahalanobis_term_21 - d + log_det_term_21)
+            
+            return kl_12 + kl_21
+
+        except np.linalg.LinAlgError:
+            # Fallback to infinity if any matrix is singular
+            return np.full((n1, n2), float("inf"))    
+    
+    # def _calculate_kl(self, mu1, cov1, mu2, cov2, symmetric=True):
+    #     p = mu1.shape[0]
+
+    #     def kl_divergence(m1, c1, m2, c2):
+    #         c2_inv = np.linalg.inv(c2)
+    #         trace_term = np.trace(c2_inv @ c1)
+    #         mean_diff = m2 - m1
+    #         mahalanobis_term = mean_diff.T @ c2_inv @ mean_diff
+    #         log_det_term = np.log(np.linalg.det(c2) / np.linalg.det(c1))
+    #         return 0.5 * (trace_term + mahalanobis_term - p + log_det_term)
+
+    #     try:
+    #         d1 = kl_divergence(mu1, cov1, mu2, cov2)
+
+    #         if symmetric:
+    #             d2 = kl_divergence(mu2, cov2, mu1, cov1)
+    #             return d1 + d2
+    #         else:
+    #             return d1
+    #     except np.linalg.LinAlgError:
+    #         return float("inf")
 
     def _find_best_match(self, gmm_measurement, meas_idx, candidate_indices, match_threshold):
         """
@@ -171,32 +340,33 @@ class MasterGMM:
         # Return match only if below threshold
         return best_master_idx if min_distance < match_threshold else None
 
-    def _add_new_components(self, new_components):
+    def _add_new_components(self, gmm_measurement, new_components_ids):
         """Add unmatched components as new master components."""
         # Create temporary container with current master state
-        temp_model = CPUContainerf4(self.n_components)
-        temp_model.weights_ = self.weights
-        temp_model.means_ = self.means
-        temp_model.covariances_ = self.covariances
-        
-        old_n_components = self.n_components
+        # temp_model = CPUContainerf4(self.n_components)
+        # temp_model.weights_ = self.weights
+        # temp_model.means_ = self.means
+        # temp_model.covariances_ = self.covariances
+        old_n_components = self.model.n_components
+
+        new_gmm = gmm_measurement.submap_from_indices(new_components_ids)
+        self.model.merge(new_gmm)
         
         # Merge each new component
-        for new_comp in new_components:
-            temp_model.merge(new_comp)
+        for new_comp in new_components_ids:
             self.fusion_counts.append(1)
             self.last_displacements.append(0.0)
             self.observation_counts.append(1)
         
         # Extract updated data back to numpy arrays
-        self.n_components = temp_model.n_components_
-        self.weights = np.array(temp_model.weights_, copy=True)
-        self.means = np.array(temp_model.means_, copy=True)
-        self.covariances = np.array(temp_model.covariances_, copy=True)
+        # self.n_components = temp_model.n_components_
+        # self.weights = np.array(temp_model.weights_, copy=True)
+        # self.means = np.array(temp_model.means_, copy=True)
+        # self.covariances = np.array(temp_model.covariances_, copy=True)
         
         # Update spatial index with new components
-        for i in range(old_n_components, self.n_components):
-            mean = self.means[i, :3]
+        for i in range(old_n_components, self.model.n_components):
+            mean = self.model.means[i, :3]
             self.rtree.insert(i, (*mean, *mean))
 
     def _normalize_weights(self):
@@ -207,87 +377,66 @@ class MasterGMM:
 
     def prune_stale_components(self, min_observations=5, max_fusion_ratio=0.4):
         """
-        Remove Gaussians that are stale outliers.
+        Remove Gaussians that are stale outliers using vectorized operations.
         
-        A Gaussian is considered stale if:
-        1. It has been observed multiple times (in observation space of measurements)
-        2. But hasn't been fused recently (hasn't matched any incoming Gaussians)
-        
-        This means:
-        - Single-visit regions are NEVER pruned (they're just under-explored)
-        - Only Gaussians in re-observed regions that don't match are pruned (likely outliers)
+        A Gaussian is considered stale if it has been observed multiple times but has a low
+        fusion ratio, indicating it's likely an outlier in a re-observed area.
         """
-        
-        if self.n_components == 0:
+        if self.model.n_components == 0:
             return 0
         
-        # Determine which components to keep
-        keep_mask = []
-        for i in range(self.n_components):
-            obs_count = self.observation_counts[i]
-            fus_count = self.fusion_counts[i]
-            
-            # Keep if under-observed OR has good fusion ratio
-            fusion_ratio = fus_count / obs_count if obs_count > 0 else 1.0
-            
-            keep = obs_count < min_observations or fusion_ratio >= max_fusion_ratio
-            keep_mask.append(keep)
+        # --- Vectorized Pruning Logic ---
+        # Convert tracking lists to numpy arrays for vectorized operations
+        obs_counts = np.array(self.observation_counts)
+        fus_counts = np.array(self.fusion_counts)
         
-        keep_mask = np.array(keep_mask)
+        # Calculate fusion ratio for all components, avoiding division by zero
+        # Where obs_counts is 0, the ratio is irrelevant as it will be kept anyway.
+        # We can safely set the ratio to 1.0 in these cases.
+        fusion_ratios = np.divide(fus_counts, obs_counts, 
+                                  out=np.ones_like(fus_counts, dtype=float), 
+                                  where=obs_counts!=0)
+        
+        # Determine which components to keep based on the criteria
+        # Keep if: under-observed OR has a good fusion ratio
+        keep_mask = (obs_counts < min_observations) | (fusion_ratios >= max_fusion_ratio)
+        
         n_pruned = np.sum(~keep_mask)
         
         if n_pruned == 0:
             return 0
         
-        # Get indices to keep
-        keep_indices = np.where(keep_mask)[0]
+        # --- Apply Pruning ---
+        # Get indices of components to keep
+        keep_indices = np.where(keep_mask)[0].tolist()
         
-        # Update all arrays
-        self.weights = self.weights[keep_indices]
-        self.means = self.means[keep_indices]
-        self.covariances = self.covariances[keep_indices]
+        # Prune the model directly using the list of indices
+        self.model.prune(keep_indices)
+        
+        # Prune the associated tracking lists
         self.fusion_counts = [self.fusion_counts[i] for i in keep_indices]
-        self.last_displacements = [self.last_displacements[i] for i in keep_indices]
-        self.n_components = len(keep_indices)
+        self.observation_counts = [self.observation_counts[i] for i in keep_indices]
         
-        # Rebuild R-tree with remaining components
+        # Ensure last_displacements is a numpy array before indexing
+        if not isinstance(self.last_displacements, np.ndarray):
+            self.last_displacements = np.array(self.last_displacements)
+        self.last_displacements = self.last_displacements[keep_indices]
+        
+        # Rebuild the R-tree from scratch with the remaining components
         p = index.Property()
         p.dimension = 3
         self.rtree = index.Index(properties=p)
-        for i in range(self.n_components):
-            mean = self.means[i, :3]
+        for i in range(self.model.n_components):
+            mean = self.model.means[i, :3]
             self.rtree.insert(i, (*mean, *mean))
         
-        # Renormalize weights
-        if self.n_components > 0:
-            self.weights /= np.sum(self.weights)
+        # Renormalize weights after pruning
+        self.model.normalize_weights()
         
         rospy.loginfo("=========================================================================")
-        rospy.loginfo(f"Pruned {n_pruned} stale outlier Gaussians, {self.n_components} remaining")
+        rospy.loginfo(f"Pruned {n_pruned} stale outlier Gaussians, {self.model.n_components} remaining")
         rospy.loginfo("=========================================================================")
         return n_pruned
-
-    def _calculate_kl(self, mu1, cov1, mu2, cov2, symmetric=True):
-        p = mu1.shape[0]
-
-        def kl_divergence(m1, c1, m2, c2):
-            c2_inv = np.linalg.inv(c2)
-            trace_term = np.trace(c2_inv @ c1)
-            mean_diff = m2 - m1
-            mahalanobis_term = mean_diff.T @ c2_inv @ mean_diff
-            log_det_term = np.log(np.linalg.det(c2) / np.linalg.det(c1))
-            return 0.5 * (trace_term + mahalanobis_term - p + log_det_term)
-
-        try:
-            d1 = kl_divergence(mu1, cov1, mu2, cov2)
-
-            if symmetric:
-                d2 = kl_divergence(mu2, cov2, mu1, cov1)
-                return d1 + d2
-            else:
-                return d1
-        except np.linalg.LinAlgError:
-            return float("inf")
 
     def _fuse_components(self, master_idx, incoming_measurement):
         """Merges a measurement component into a master component."""
