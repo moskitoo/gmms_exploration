@@ -590,7 +590,8 @@ class SOGMMROSNode:
             local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
             local_model_gpu.to_host(local_model_cpu)
 
-            gira_time = time.time() - gmm_start_time
+            gira_timestamp = time.time()
+            gira_time = gira_timestamp - gmm_start_time
 
             # 2. Update the master GMM with the new local measurement
             self.master_gmm.update(
@@ -606,7 +607,8 @@ class SOGMMROSNode:
                     max_fusion_ratio=self.max_fusion_ratio
                 )
 
-            full_processing_time = time.time() - gmm_start_time
+            proc_timestamp = time.time()
+            processing_time = proc_timestamp - gira_timestamp
 
             # Visualize results - only if we have a model
             viz_start_time = time.time()
@@ -614,10 +616,10 @@ class SOGMMROSNode:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
-            processing_time = time.time() - start_time
+            full_processing_time = time.time() - start_time
             n_components = self.master_gmm.model.n_components_
             rospy.loginfo(
-                f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GIRA: {gira_time:.3f}s, Viz: {viz_time:.3f}s, Full processing: {full_processing_time:.3f}s)"
+                f"Processed point cloud with {n_components} components in {full_processing_time:.3f}s (GIRA: {gira_time:.3f}s, Processing: {processing_time:.3f}s, Viz: {viz_time:.3f}s)"
             )
 
             gmm_stats_msg = Int32()
