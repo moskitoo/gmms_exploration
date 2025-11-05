@@ -353,6 +353,7 @@ class SOGMMROSNode:
         self.add_metric_text = rospy.get_param("~add_metric_text", True)
         self.suspicious_displacement = rospy.get_param("~suspicious_displacement", 0.01)
         self.unstable_displacement = rospy.get_param("~unstable_displacement", 0.2)
+        self.displacement_score_factor = rospy.get_param("~displacement_score_factor", 0.05)
         
         # Processing parameters
         self.processing_decimation = rospy.get_param("~processing_decimation", 1)
@@ -455,6 +456,8 @@ class SOGMMROSNode:
             local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
             local_model_gpu.to_host(local_model_cpu)
 
+            gira_time = time.time() - gmm_start_time
+
             # 2. Update the master GMM with the new local measurement
             self.master_gmm.update(
                 gmm_measurement=local_model_cpu, 
@@ -469,7 +472,7 @@ class SOGMMROSNode:
                     max_fusion_ratio=self.max_fusion_ratio
                 )
 
-            gmm_time = time.time() - gmm_start_time
+            full_processing_time = time.time() - gmm_start_time
 
             # Visualize results - only if we have a model
             viz_start_time = time.time()
@@ -480,7 +483,7 @@ class SOGMMROSNode:
             processing_time = time.time() - start_time
             n_components = self.master_gmm.n_components
             rospy.loginfo(
-                f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GMM: {gmm_time:.3f}s, Viz: {viz_time:.3f}s)"
+                f"Processed point cloud with {n_components} components in {processing_time:.3f}s (GIRA: {gira_time:.3f}s, Viz: {viz_time:.3f}s, Full processing: {full_processing_time:.3f}s)"
             )
 
             gmm_stats_msg = Int32()
@@ -657,7 +660,7 @@ class SOGMMROSNode:
                 score = 0.5  # Unstable (large displacement)
             else:
                 # Good stability: combine displacement and fusion scores
-                displacement_score = np.exp(-displacement / 0.05)
+                displacement_score = np.exp(-displacement / self.displacement_score_factor)
                 fusion_score = np.log1p(fusion_count) / np.log1p(10)
                 score = fusion_score * displacement_score
                 
