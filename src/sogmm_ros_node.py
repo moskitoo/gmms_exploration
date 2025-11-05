@@ -99,9 +99,9 @@ class MasterGMM:
         # self.fusion_counts = [1] * self.model.n_components_
         # self.observation_counts = [1] * self.model.n_components_
         # self.last_displacements = [0.0] * self.model.n_components_
-        self.fusion_counts = np.ones(self.model.n_components_, dtype=int)
-        self.observation_counts = np.ones(self.model.n_components_, dtype=int)
-        self.last_displacements = np.zeros(self.model.n_components_, dtype=float)
+        # self.fusion_counts = np.ones(self.model.n_components_, dtype=int)
+        # self.observation_counts = np.ones(self.model.n_components_, dtype=int)
+        # self.last_displacements = np.zeros(self.model.n_components_, dtype=float)
         
         # Build spatial index
         for i in range(self.model.n_components_):
@@ -121,8 +121,8 @@ class MasterGMM:
 
     def _update_observation_counts(self, candidate_indices):
         """Update observation counts for components in re-observed region."""
-        for idx in candidate_indices:
-            self.observation_counts[idx] += 1
+        if candidate_indices:
+            self.model.observation_counts_[candidate_indices] += 1
 
     def _match_and_fuse_components(self, gmm_measurement, candidate_indices, match_threshold):
         """
@@ -215,16 +215,11 @@ class MasterGMM:
         self.model.covariances_[master_indices] = cov_new.reshape(-1, 16)
 
         # Update fusion counts
-        np.add.at(self.fusion_counts, master_indices, 1)
+        np.add.at(self.model.fusion_counts_, master_indices, 1)
 
         # Update displacements (store the last displacement for each master component)
         displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
-        
-        # Ensure last_displacements is a numpy array for advanced indexing
-        if not isinstance(self.last_displacements, np.ndarray):
-            self.last_displacements = np.array(self.last_displacements)
-            
-        self.last_displacements[master_indices] = displacements
+        self.model.last_displacements_[master_indices] = displacements
     
     def _calculate_kl_matrix(self, means1, covs1, means2, covs2, symmetric=True):
         """
@@ -353,19 +348,14 @@ class MasterGMM:
         old_n_components = self.model.n_components_
 
         new_gmm = gmm_measurement.submap_from_indices(new_components_ids)
+        
+        # Manually set tracking properties for the new GMM before merging
+        # num_new = len(new_components_ids)
+        # new_gmm.fusion_counts_ = np.ones(num_new, dtype=int)
+        # new_gmm.observation_counts_ = np.ones(num_new, dtype=int)
+        # new_gmm.last_displacements_ = np.zeros(num_new, dtype=float)
+
         self.model.merge(new_gmm)
-        
-        # Merge each new component
-        num_new = len(new_components_ids)
-        self.fusion_counts = np.concatenate([self.fusion_counts, np.ones(num_new, dtype=int)])
-        self.last_displacements = np.concatenate([self.last_displacements, np.zeros(num_new, dtype=float)])
-        self.observation_counts = np.concatenate([self.observation_counts, np.ones(num_new, dtype=int)])
-        
-        # Extract updated data back to numpy arrays
-        # self.n_components = temp_model.n_components_
-        # self.weights = np.array(temp_model.weights_, copy=True)
-        # self.means = np.array(temp_model.means_, copy=True)
-        # self.covariances = np.array(temp_model.covariances_, copy=True)
         
         # Update spatial index with new components
         for i in range(old_n_components, self.model.n_components_):
@@ -390,8 +380,8 @@ class MasterGMM:
         
         # --- Vectorized Pruning Logic ---
         # Convert tracking lists to numpy arrays for vectorized operations
-        obs_counts = np.array(self.observation_counts)
-        fus_counts = np.array(self.fusion_counts)
+        obs_counts = self.model.observation_counts_
+        fus_counts = self.model.fusion_counts_
         
         # Calculate fusion ratio for all components, avoiding division by zero
         # Where obs_counts is 0, the ratio is irrelevant as it will be kept anyway.
@@ -414,16 +404,8 @@ class MasterGMM:
         keep_indices = np.where(keep_mask)[0].tolist()
         
         # Prune the model directly using the list of indices
-        self.model.submap_from_indices(keep_indices)
-        
-        # Prune the associated tracking lists
-        self.fusion_counts = [self.fusion_counts[i] for i in keep_indices]
-        self.observation_counts = [self.observation_counts[i] for i in keep_indices]
-        
-        # Ensure last_displacements is a numpy array before indexing
-        if not isinstance(self.last_displacements, np.ndarray):
-            self.last_displacements = np.array(self.last_displacements)
-        self.last_displacements = self.last_displacements[keep_indices]
+        pruned_model = self.model.submap_from_indices(keep_indices)
+        self.model = pruned_model
         
         # Rebuild the R-tree from scratch with the remaining components
         p = index.Property()
@@ -777,13 +759,13 @@ class SOGMMROSNode:
         norm_values = []
         
         if self.color_by == "confidence":
-            log_counts = [np.log1p(c) for c in master_gmm.fusion_counts]
+            log_counts = [np.log1p(c) for c in master_gmm.model.fusion_counts_]
             max_log_count = max(log_counts) if log_counts else 1.0
             norm_values = [c / max(1.0, max_log_count) for c in log_counts]
             
         elif self.color_by == "stability":
             for idx in range(len(master_gmm.model.means_)):
-                displacement = master_gmm.last_displacements[idx]
+                displacement = master_gmm.model.last_displacements_[idx]
                 score = np.exp(-displacement / 0.05)
                 norm_values.append(score)
                 
@@ -801,8 +783,8 @@ class SOGMMROSNode:
         norm_values = []
         
         for idx in range(len(master_gmm.model.means_)):
-            fusion_count = master_gmm.fusion_counts[idx]
-            displacement = master_gmm.last_displacements[idx]
+            fusion_count = master_gmm.model.fusion_counts_[idx]
+            displacement = master_gmm.model.last_displacements_[idx]
             
             if fusion_count <= 1:
                 score = 0.0  # Unverified
@@ -909,8 +891,8 @@ class SOGMMROSNode:
 
     def _set_combined_color(self, marker, master_gmm, i, norm_values):
         """Set color for combined visualization mode."""
-        fusion_count = master_gmm.fusion_counts[i]
-        displacement = master_gmm.last_displacements[i]
+        fusion_count = master_gmm.model.fusion_counts_[i]
+        displacement = master_gmm.model.last_displacements_[i]
         
         if fusion_count <= 1:
             # Red = unverified
@@ -942,7 +924,7 @@ class SOGMMROSNode:
         text_marker.lifetime = rospy.Duration(2.0)
 
         # Position at component mean
-        mean = master_gmm.means[i, :3]
+        mean = master_gmm.model.means_[i, :3]
         text_marker.pose.position.x = float(mean[0])
         text_marker.pose.position.y = float(mean[1])
         text_marker.pose.position.z = float(mean[2])
@@ -961,15 +943,15 @@ class SOGMMROSNode:
     def _get_text_content(self, master_gmm, i):
         """Get text content for marker based on visualization mode."""
         if self.color_by == "confidence":
-            return f"C:{master_gmm.fusion_counts[i]}"
+            return f"C:{master_gmm.model.fusion_counts_[i]}"
         elif self.color_by == "stability":
-            return f"D:{master_gmm.last_displacements[i]:.3f}"
+            return f"D:{master_gmm.model.last_displacements_[i]:.3f}"
         elif self.color_by == "combined":
-            count = master_gmm.fusion_counts[i]
-            disp = master_gmm.last_displacements[i]
+            count = master_gmm.model.fusion_counts_[i]
+            disp = master_gmm.model.last_displacements_[i]
             return f"C:{count} D:{disp:.3f}"
         else:
-            return f"{master_gmm.means[i, 3]:.2f}"
+            return f"{master_gmm.model.means_[i, 3]:.2f}"
 
     def _add_clear_markers(self, marker_array, current_count, frame_id, timestamp):
         """Add markers to clear old components if count decreased."""
