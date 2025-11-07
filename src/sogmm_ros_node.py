@@ -143,58 +143,6 @@ class MasterGMM:
         
         return n_fused, unmatched_measurement_indices
     
-    def _fuse_components_vectorized(self, master_indices, meas_gmm, meas_indices):
-        """
-        Vectorized fusion of multiple measurement components into master components.
-        """
-        # --- Gather data for all components to be fused ---
-        # Master components
-        w_i = self.model.weights_[master_indices]
-        mu_i = self.model.means_[master_indices]
-        cov_i = self.model.covariances_[master_indices].reshape(-1, 4, 4)
-
-        # Measurement components
-        meas_comps_to_fuse = meas_gmm.submap_from_indices(meas_indices)
-        w_j = meas_comps_to_fuse.weights_
-        mu_j = meas_comps_to_fuse.means_
-        cov_j = meas_comps_to_fuse.covariances_.reshape(-1, 4, 4)
-
-        # --- Perform fusion calculations in a vectorized manner ---
-        w_new = w_i + w_j
-        mu_new = (w_i[:, np.newaxis] * mu_i + w_j[:, np.newaxis] * mu_j) / w_new[:, np.newaxis]
-
-        diff_i = mu_i - mu_new
-        diff_j = mu_j - mu_new
-
-        # Use einsum for batched outer product: diff @ diff.T
-        # '...i,...j->...ij' computes the outer product for each vector in the batch
-        outer_i = np.einsum('...i,...j->...ij', diff_i, diff_i)
-        outer_j = np.einsum('...i,...j->...ij', diff_j, diff_j)
-
-        cov_new = (w_i[:, np.newaxis, np.newaxis] * (cov_i + outer_i) + 
-                   w_j[:, np.newaxis, np.newaxis] * (cov_j + outer_j)) / w_new[:, np.newaxis, np.newaxis]
-
-        # --- Update master model state ---
-        # This is tricky because multiple `meas_indices` can map to the same `master_index`.
-        # We need to sum the contributions for each unique master component.
-        unique_master_indices, inverse_indices = np.unique(master_indices, return_inverse=True)
-
-        # Update weights by adding all contributions from new measurements
-        np.add.at(self.model.weights_, master_indices, w_j)
-
-        # Update means and covariances using the final fused values
-        # For master components matched multiple times, this uses the result from the *last* match.
-        # A more complex (but slower) approach would be to iteratively fuse. This is a good approximation.
-        self.model.means_[master_indices] = mu_new
-        self.model.covariances_[master_indices] = cov_new.reshape(-1, 16)
-
-        # Update fusion counts
-        np.add.at(self.model.fusion_counts_, master_indices, 1)
-
-        # Update displacements (store the last displacement for each master component)
-        displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
-        self.model.last_displacements_[master_indices] = displacements
-    
     def _calculate_kl_matrix(self, means1, covs1, means2, covs2, symmetric=True):
         """
         Calculates a matrix of pairwise KL divergences between two sets of Gaussians.
@@ -262,7 +210,60 @@ class MasterGMM:
 
         except np.linalg.LinAlgError:
             # Fallback to infinity if any matrix is singular
-            return np.full((n1, n2), float("inf"))    
+            return np.full((n1, n2), float("inf"))   
+    
+    def _fuse_components_vectorized(self, master_indices, meas_gmm, meas_indices):
+        """
+        Vectorized fusion of multiple measurement components into master components.
+        """
+        # --- Gather data for all components to be fused ---
+        # Master components
+        w_i = self.model.weights_[master_indices]
+        mu_i = self.model.means_[master_indices]
+        cov_i = self.model.covariances_[master_indices].reshape(-1, 4, 4)
+
+        # Measurement components
+        meas_comps_to_fuse = meas_gmm.submap_from_indices(meas_indices)
+        w_j = meas_comps_to_fuse.weights_
+        mu_j = meas_comps_to_fuse.means_
+        cov_j = meas_comps_to_fuse.covariances_.reshape(-1, 4, 4)
+
+        # --- Perform fusion calculations in a vectorized manner ---
+        w_new = w_i + w_j
+        mu_new = (w_i[:, np.newaxis] * mu_i + w_j[:, np.newaxis] * mu_j) / w_new[:, np.newaxis]
+
+        diff_i = mu_i - mu_new
+        diff_j = mu_j - mu_new
+
+        # Use einsum for batched outer product: diff @ diff.T
+        # '...i,...j->...ij' computes the outer product for each vector in the batch
+        outer_i = np.einsum('...i,...j->...ij', diff_i, diff_i)
+        outer_j = np.einsum('...i,...j->...ij', diff_j, diff_j)
+
+        cov_new = (w_i[:, np.newaxis, np.newaxis] * (cov_i + outer_i) + 
+                   w_j[:, np.newaxis, np.newaxis] * (cov_j + outer_j)) / w_new[:, np.newaxis, np.newaxis]
+
+        # --- Update master model state ---
+        # This is tricky because multiple `meas_indices` can map to the same `master_index`.
+        # We need to sum the contributions for each unique master component.
+        unique_master_indices, inverse_indices = np.unique(master_indices, return_inverse=True)
+
+        # Update weights by adding all contributions from new measurements
+        np.add.at(self.model.weights_, master_indices, w_j)
+
+        # Update means and covariances using the final fused values
+        # For master components matched multiple times, this uses the result from the *last* match.
+        # A more complex (but slower) approach would be to iteratively fuse. This is a good approximation.
+        self.model.means_[master_indices] = mu_new
+        self.model.covariances_[master_indices] = cov_new.reshape(-1, 16)
+
+        # Update fusion counts
+        np.add.at(self.model.fusion_counts_, master_indices, 1)
+
+        # Update displacements (store the last displacement for each master component)
+        displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
+        self.model.last_displacements_[master_indices] = displacements
+
 
     def _add_new_components(self, gmm_measurement, new_components_ids):
         """Add unmatched components as new master components."""
