@@ -433,7 +433,9 @@ class SOGMMROSNode:
         """Initialize core SOGMM processing components and threading."""
         # Core SOGMM components
         self.master_gmm = MasterGMM()
-        self.learner = GPUFit(self.bandwidth)
+        # self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=100)
+        self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=50)
+        # self.learner = GPUFit(bandwidth=self.bandwidth)
         self.inference = GPUInference()
         
         # Processing state
@@ -489,6 +491,11 @@ class SOGMMROSNode:
 
         try:
             start_time = time.time()
+
+            rospy.loginfo("===============================================")
+            rospy.loginfo(f"CONFIG: {self.learner.tol}, {self.learner.reg_covar}, {self.learner.max_iter}")
+            rospy.loginfo("===============================================")
+
 
             pcld = self.preprocess_point_cloud(msg)
 
