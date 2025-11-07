@@ -30,17 +30,11 @@ from visualization_msgs.msg import Marker, MarkerArray
 class MasterGMM:
     def __init__(self):
         self.model = None
-        # Store GMM components as numpy arrays we control
-        # self.weights = None
-        # self.means = None
-        # self.covariances = None
-        # self.n_components = 0
-
-        # self.fusion_counts = []
-        # self.last_displacements = []
-        # self.observation_counts = []
 
         # R-tree for spatial indexing of GMM components
+        self.init_r_tree()
+
+    def init_r_tree(self):
         p = index.Property()
         p.dimension = 3
         self.rtree = index.Index(properties=p)
@@ -78,30 +72,10 @@ class MasterGMM:
         n_novel = len(new_components_ids)
         rospy.loginfo(f"Fused: {n_fused}, Novel: {n_novel}")
 
-
-    def _make_writable(self, gmm):
-        # Create deep writable NumPy copies detached from pybind11
-        gmm.weights_ = np.array(gmm.weights_, copy=True)
-        gmm.means_ = np.array(gmm.means_, copy=True)
-        gmm.covariances_ = np.array(gmm.covariances_, copy=True)
-        return gmm
-
     def _initialize_from_measurement(self, gmm_measurement):
         """Initialize master GMM from first measurement."""
-        # self.weights = np.array(gmm_measurement.weights_, copy=True)
-        # self.means = np.array(gmm_measurement.means_, copy=True) 
-        # self.covariances = np.array(gmm_measurement.covariances_, copy=True)
-        # self.n_components = gmm_measurement.n_components_
 
         self.model = CPUContainerf4(gmm_measurement)
-        
-        # Initialize tracking arrays
-        # self.fusion_counts = [1] * self.model.n_components_
-        # self.observation_counts = [1] * self.model.n_components_
-        # self.last_displacements = [0.0] * self.model.n_components_
-        # self.fusion_counts = np.ones(self.model.n_components_, dtype=int)
-        # self.observation_counts = np.ones(self.model.n_components_, dtype=int)
-        # self.last_displacements = np.zeros(self.model.n_components_, dtype=float)
         
         # Build spatial index
         for i in range(self.model.n_components_):
@@ -289,71 +263,13 @@ class MasterGMM:
         except np.linalg.LinAlgError:
             # Fallback to infinity if any matrix is singular
             return np.full((n1, n2), float("inf"))    
-    
-    # def _calculate_kl(self, mu1, cov1, mu2, cov2, symmetric=True):
-    #     p = mu1.shape[0]
-
-    #     def kl_divergence(m1, c1, m2, c2):
-    #         c2_inv = np.linalg.inv(c2)
-    #         trace_term = np.trace(c2_inv @ c1)
-    #         mean_diff = m2 - m1
-    #         mahalanobis_term = mean_diff.T @ c2_inv @ mean_diff
-    #         log_det_term = np.log(np.linalg.det(c2) / np.linalg.det(c1))
-    #         return 0.5 * (trace_term + mahalanobis_term - p + log_det_term)
-
-    #     try:
-    #         d1 = kl_divergence(mu1, cov1, mu2, cov2)
-
-    #         if symmetric:
-    #             d2 = kl_divergence(mu2, cov2, mu1, cov1)
-    #             return d1 + d2
-    #         else:
-    #             return d1
-    #     except np.linalg.LinAlgError:
-    #         return float("inf")
-
-    def _find_best_match(self, gmm_measurement, meas_idx, candidate_indices, match_threshold):
-        """
-        Find the best matching master component for a measurement component.
-        
-        Returns:
-            int or None: Index of best matching master component, or None if no match
-        """
-        meas_mu = gmm_measurement.means_[meas_idx]
-        meas_cov = gmm_measurement.covariances_[meas_idx].reshape(4, 4)
-        
-        min_distance = float("inf")
-        best_master_idx = None
-        
-        for master_idx in candidate_indices:
-            master_mu = self.means[master_idx]
-            master_cov = self.covariances[master_idx].reshape(4, 4)
-            
-            distance = self._calculate_kl(meas_mu, meas_cov, master_mu, master_cov)
-            
-            if distance < min_distance:
-                min_distance = distance
-                best_master_idx = master_idx
-        
-        # Return match only if below threshold
-        return best_master_idx if min_distance < match_threshold else None
 
     def _add_new_components(self, gmm_measurement, new_components_ids):
         """Add unmatched components as new master components."""
-        # Create temporary container with current master state
-        # temp_model = CPUContainerf4(self.n_components)
-        # temp_model.weights_ = self.weights
-        # temp_model.means_ = self.means
-        # temp_model.covariances_ = self.covariances
+
         old_n_components = self.model.n_components_
 
         new_gmm = gmm_measurement.submap_from_indices(new_components_ids)
-        
-        # Manually set tracking properties for the new GMM before merging
-        # num_new = len(new_components_ids)
-        # new_gmm.fusion_counts_ = np.ones(num_new, dtype=int)
-        # new_gmm.observation_counts_ = np.ones(num_new, dtype=int)
-        # new_gmm.last_displacements_ = np.zeros(num_new, dtype=float)
 
         self.model.merge(new_gmm)
         
@@ -361,12 +277,6 @@ class MasterGMM:
         for i in range(old_n_components, self.model.n_components_):
             mean = self.model.means_[i, :3]
             self.rtree.insert(i, (*mean, *mean))
-
-    def _normalize_weights(self):
-        """Normalize component weights to sum to 1."""
-        total_weight = np.sum(self.weights)
-        if total_weight > 0:
-            self.weights /= total_weight
 
     def prune_stale_components(self, min_observations=5, max_fusion_ratio=0.4):
         """
