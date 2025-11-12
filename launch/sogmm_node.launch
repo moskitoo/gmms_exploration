@@ -10,13 +10,16 @@
           launch-prefix="bash -c 'cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">
         
         <!-- SOGMM Algorithm Parameters -->
-        <param name="bandwidth" value="0.01" />
+        <param name="bandwidth" value="0.02" />
+        <param name="tolerance" value="1e-10" type="double" />
+        <param name="reg_covar" value="1e-10" type="double" />
+        <param name="max_iter" value="100" type="int" />
         <param name="kl_div_match_thresh" value="50.0" />
         
         <!-- Visualization Parameters -->
         <param name="enable_visualization" value="true" />
         <param name="visualization_scale" value="2.0" />
-        <param name="color_by" value="intensity" />
+        <param name="color_by" value="combined" />
         <!-- Options: intensity, confidence, stability, combined -->
         <param name="add_metric_text" value="false" />
         <param name="suspicious_displacement" value="0.001" />

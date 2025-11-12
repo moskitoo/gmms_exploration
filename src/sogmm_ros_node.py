@@ -388,6 +388,9 @@ class SOGMMROSNode:
         """Load all ROS parameters with default values."""
         # SOGMM algorithm parameters
         self.bandwidth = rospy.get_param("~bandwidth", 0.02)
+        self.tolerance = rospy.get_param("~tolerance", 1e-3)
+        self.reg_covar = rospy.get_param("~reg_covar", 1e-6)
+        self.max_iter = rospy.get_param("~max_iter", 100)
         self.kl_div_match_thresh = rospy.get_param("~kl_div_match_thresh", 5.0)
         self.l_thres = 0.05
         
@@ -434,7 +437,7 @@ class SOGMMROSNode:
         # Core SOGMM components
         self.master_gmm = MasterGMM()
         # self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=100)
-        self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=50)
+        self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=self.tolerance, reg_covar=self.reg_covar, max_iter=self.max_iter)
         # self.learner = GPUFit(bandwidth=self.bandwidth)
         self.inference = GPUInference()
         
@@ -507,6 +510,14 @@ class SOGMMROSNode:
             self.learner.fit(self.extract_ms_data(pcld), pcld, local_model_gpu)
             local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
             local_model_gpu.to_host(local_model_cpu)
+
+            cov_reshaped = local_model_cpu.covariances_.reshape(local_model_cpu.covariances_.shape[0],4,4)
+            cov_3_3 = cov_reshaped[:,0:3, 0:3]
+            mean_cov = cov_3_3.mean(axis=0)
+
+            rospy.loginfo("===============================================")
+            rospy.loginfo(f"COVARIANCE: {mean_cov}")
+            rospy.loginfo("===============================================")
 
             gira_timestamp = time.time()
             gira_time = gira_timestamp - gmm_start_time
