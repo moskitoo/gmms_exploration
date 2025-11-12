@@ -516,7 +516,8 @@ class SOGMMROSNode:
             mean_cov = cov_3_3.mean(axis=0)
 
             rospy.loginfo("===============================================")
-            rospy.loginfo(f"COVARIANCE: {mean_cov}")
+            # rospy.loginfo(f"COVARIANCE: {mean_cov}")
+            rospy.loginfo(f"COVARIANCE: {local_model_cpu.covariances_}")
             rospy.loginfo("===============================================")
 
             gira_timestamp = time.time()
