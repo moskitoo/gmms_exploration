@@ -768,19 +768,31 @@ class SOGMMROSNode:
     def _set_marker_geometry(self, marker, covariance_flat):
         """Set marker scale and orientation based on covariance matrix."""
         try:
-            # Extract 3D spatial covariance
+
+             # Extract 3D spatial covariance
             cov_4x4 = covariance_flat.reshape(4, 4)
             cov_3d = cov_4x4[:3, :3]
 
             # Compute eigenvalues and eigenvectors
             eigenvals, eigenvecs = np.linalg.eigh(cov_3d)
-            eigenvals = np.maximum(eigenvals, 1e-6)
 
-            # Set scale based on eigenvalues
+            # eigh returns them in ascending order. We want descending for convention.
+            # sorted_indices = np.argsort(eigenvals)[::-1]
+            # eigenvals = eigenvals[sorted_indices]
+            # eigenvecs = eigenvecs[:, sorted_indices]
+
+            # Ensure a right-handed coordinate system (important for rotation matrix)
+            # The third eigenvector is the cross product of the first two.
+            eigenvecs[:, 2] = np.cross(eigenvecs[:, 0], eigenvecs[:, 1])
+            
+            # Ensure eigenvalues are non-negative for sqrt
+            eigenvals = np.maximum(eigenvals, 1e-9)
+
+            # Set scale based on eigenvalues (now sorted largest to smallest)
             scale_factor = self.visualization_scale
-            marker.scale.x = 2 * scale_factor * np.sqrt(eigenvals[0])
-            marker.scale.y = 2 * scale_factor * np.sqrt(eigenvals[1])
-            marker.scale.z = 2 * scale_factor * np.sqrt(eigenvals[2])
+            marker.scale.x = 2 * scale_factor * np.sqrt(eigenvals[0]) # Largest variance
+            marker.scale.y = 2 * scale_factor * np.sqrt(eigenvals[1]) # Middle variance
+            marker.scale.z = 2 * scale_factor * np.sqrt(eigenvals[2]) # Smallest variance
 
             # Set orientation based on eigenvectors
             r = R.from_matrix(eigenvecs)
