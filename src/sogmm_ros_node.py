@@ -266,7 +266,7 @@ class MasterGMM:
         displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
         self.model.last_displacements_[master_indices] = displacements
 
-        self.model.uncertainty_ = self._calculate_normalization_values()
+        self.model.uncertainty_[master_indices] = self._calculate_normalization_values(master_indices)
 
 
     def _add_new_components(self, gmm_measurement, new_components_ids):
@@ -367,7 +367,7 @@ class MasterGMM:
         self.fusion_counts[master_idx] += 1
         self.last_displacements[master_idx] = displacement
 
-    def _calculate_normalization_values(self):
+    def _calculate_normalization_values(self, master_indices):
         """Calculate normalized values for color mapping based on selected mode."""
         norm_values = []
         
@@ -377,7 +377,7 @@ class MasterGMM:
             # norm_values = [c / max(1.0, max_log_count) for c in log_counts]
 
             # norm_values = [-np.exp(-c/2.0)+1 for c in self.model.fusion_counts_]
-            return -np.exp(-self.model.fusion_counts_/2.0)+1
+            return -np.exp(-self.model.fusion_counts_[master_indices]/2.0)+1
             
         elif self.uncertainty_heuristic == "stability":
             for idx in range(len(self.model.means_)):
