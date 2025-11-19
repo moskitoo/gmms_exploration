@@ -19,12 +19,16 @@
         <!-- Visualization Parameters -->
         <param name="enable_visualization" value="true" />
         <param name="visualization_scale" value="2.0" />
-        <param name="color_by" value="combined" />
+        <param name="color_by" value="confidence" />
         <!-- Options: intensity, confidence, stability, combined -->
         <param name="add_metric_text" value="false" />
         <param name="suspicious_displacement" value="0.001" />
         <param name="unstable_displacement" value="0.4" />
         <param name="displacement_score_factor" value="0.15" />
+
+
+        <param name="uncertainty_heuristic" value="confidence" />
+        <!-- Options: intensity, confidence, stability, combined -->
         
         <!-- Processing Parameters -->
         <param name="processing_decimation" value="1" />

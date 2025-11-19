@@ -28,8 +28,10 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 
 class MasterGMM:
-    def __init__(self):
+    def __init__(self, uncertainty_heuristic):
         self.model = None
+
+        self.uncertainty_heuristic = uncertainty_heuristic
 
         # R-tree for spatial indexing of GMM components
         self.init_r_tree()
@@ -264,6 +266,8 @@ class MasterGMM:
         displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
         self.model.last_displacements_[master_indices] = displacements
 
+        self.model.uncertainty_ = self._calculate_normalization_values()
+
 
     def _add_new_components(self, gmm_measurement, new_components_ids):
         """Add unmatched components as new master components."""
@@ -363,6 +367,62 @@ class MasterGMM:
         self.fusion_counts[master_idx] += 1
         self.last_displacements[master_idx] = displacement
 
+    def _calculate_normalization_values(self):
+        """Calculate normalized values for color mapping based on selected mode."""
+        norm_values = []
+        
+        if self.uncertainty_heuristic == "confidence":
+            # log_counts = [np.log1p(c) for c in master_gmm.model.fusion_counts_]
+            # max_log_count = max(log_counts) if log_counts else 1.0
+            # norm_values = [c / max(1.0, max_log_count) for c in log_counts]
+
+            # norm_values = [-np.exp(-c/2.0)+1 for c in self.model.fusion_counts_]
+            return -np.exp(-self.model.fusion_counts_/2.0)+1
+            
+        elif self.uncertainty_heuristic == "stability":
+            for idx in range(len(self.model.means_)):
+                displacement = self.model.last_displacements_[idx]
+                score = np.exp(-displacement / 0.05)
+                norm_values.append(score)
+                
+            if norm_values:
+                max_score = max(norm_values) if max(norm_values) > 0 else 1.0
+                norm_values = [s / max_score for s in norm_values]
+                
+        elif self.uncertainty_heuristic == "combined":
+            norm_values = self._calculate_combined_scores(self)
+            
+        return norm_values
+
+    def _calculate_combined_scores(self):
+        """Calculate combined stability scores based on fusion count and displacement."""
+        norm_values = []
+        
+        for idx in range(len(self.model.means_)):
+            fusion_count = self.model.fusion_counts_[idx]
+            displacement = self.model.last_displacements_[idx]
+            
+            if fusion_count <= 1:
+                score = 0.0  # Unverified
+            elif displacement < self.suspicious_displacement:
+                score = 0.3  # Suspicious (no movement)
+            elif displacement > self.unstable_displacement:
+                score = 0.5  # Unstable (large displacement)
+            else:
+                # Good stability: combine displacement and fusion scores
+                displacement_score = np.exp(-displacement / self.displacement_score_factor)
+                fusion_score = np.log1p(fusion_count) / np.log1p(10)
+                score = fusion_score * displacement_score
+                
+            norm_values.append(score)
+            
+        # Normalize to 0-1 range
+        if norm_values:
+            max_score = max(norm_values) if max(norm_values) > 0 else 1.0
+            norm_values = [s / max_score for s in norm_values]
+            
+        return norm_values
+
 class SOGMMROSNode:
     """
     ROS Node for processing point clouds with SOGMM and visualizing results
@@ -402,6 +462,8 @@ class SOGMMROSNode:
         self.suspicious_displacement = rospy.get_param("~suspicious_displacement", 0.01)
         self.unstable_displacement = rospy.get_param("~unstable_displacement", 0.2)
         self.displacement_score_factor = rospy.get_param("~displacement_score_factor", 0.05)
+
+        self.uncertainty_heuristic = rospy.get_param("~uncertainty_heuristic", "confidence")  # Options: intensity, confidence, stability, combined
         
         # Processing parameters
         self.processing_decimation = rospy.get_param("~processing_decimation", 1)
@@ -435,7 +497,7 @@ class SOGMMROSNode:
     def _setup_core_components(self):
         """Initialize core SOGMM processing components and threading."""
         # Core SOGMM components
-        self.master_gmm = MasterGMM()
+        self.master_gmm = MasterGMM(self.uncertainty_heuristic)
         # self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=100)
         self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=self.tolerance, reg_covar=self.reg_covar, max_iter=self.max_iter)
         # self.learner = GPUFit(bandwidth=self.bandwidth)
@@ -664,12 +726,12 @@ class SOGMMROSNode:
             return
 
         marker_array = MarkerArray()
-        norm_values = self._calculate_normalization_values(master_gmm)
+        # norm_values = self._calculate_normalization_values(master_gmm)
 
         # Create markers for each Gaussian component
         for i in range(len(master_gmm.model.means_)):
             # Create sphere marker
-            sphere_marker = self._create_sphere_marker(master_gmm, i, frame_id, timestamp, norm_values)
+            sphere_marker = self._create_sphere_marker(master_gmm, i, frame_id, timestamp)
             if sphere_marker:
                 marker_array.markers.append(sphere_marker)
 
@@ -741,7 +803,7 @@ class SOGMMROSNode:
             
         return norm_values
 
-    def _create_sphere_marker(self, master_gmm, i, frame_id, timestamp, norm_values):
+    def _create_sphere_marker(self, master_gmm, i, frame_id, timestamp):
         """Create a sphere marker for a Gaussian component."""
         marker = Marker()
         marker.header.frame_id = frame_id
@@ -763,7 +825,7 @@ class SOGMMROSNode:
             return None
 
         # Set color based on visualization mode
-        self._set_marker_color(marker, master_gmm, i, norm_values)
+        self._set_marker_color(marker, master_gmm, i)
 
         return marker
 
@@ -814,20 +876,20 @@ class SOGMMROSNode:
             marker.pose.orientation.w = 1.0
             return True
 
-    def _set_marker_color(self, marker, master_gmm, i, norm_values):
+    def _set_marker_color(self, marker, master_gmm, i):
         """Set marker color based on visualization mode."""
         if self.color_by == "confidence":
-            color = cm.plasma(norm_values[i])
+            color = cm.plasma(master_gmm.model.uncertainty_[i])
             marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
             marker.color.a = 0.8
             
         elif self.color_by == "stability":
-            color = cm.RdYlGn(norm_values[i])
+            color = cm.RdYlGn(master_gmm.model.uncertainty_[i])
             marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
             marker.color.a = 0.8
             
         elif self.color_by == "combined":
-            self._set_combined_color(marker, master_gmm, i, norm_values)
+            self._set_combined_color(marker, master_gmm, i, master_gmm.model.uncertainty_)
             
         else:  # Default to intensity
             intensity = master_gmm.model.means_[i, 3]
