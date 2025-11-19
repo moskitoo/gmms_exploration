@@ -28,8 +28,12 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 
 class MasterGMM:
-    def __init__(self, uncertainty_heuristic, uncertainty_scaler):
+    def __init__(self, uncertainty_heuristic, uncertainty_scaler, enable_freeze):
         self.model = None
+
+        self.uncertainty_heuristic = uncertainty_heuristic
+        self.uncertainty_scaler = uncertainty_scaler
+        self.enable_freeze = enable_freeze
 
         # R-tree for spatial indexing of GMM components
         self.init_r_tree()
@@ -108,7 +112,7 @@ class MasterGMM:
         if not candidate_indices:
             return 0, list(range(gmm_measurement.n_components_))
 
-        # 1. Create a subset of the master model for matching
+        # 1. Create a subset of the master model for matching (now includes frozen components)
         model_subset = self.model.submap_from_indices(candidate_indices)
 
         # 2. Calculate the pairwise KL divergence matrix
@@ -123,19 +127,35 @@ class MasterGMM:
 
         # 4. Identify which measurement components have a match below the threshold
         matched_mask = min_kl_values < match_threshold
-        meas_indices_to_fuse = np.where(matched_mask)[0]
-        
+        meas_indices_matched = np.where(matched_mask)[0]
         unmatched_measurement_indices = np.where(~matched_mask)[0].tolist()
+        
+        if len(meas_indices_matched) == 0:
+            return 0, unmatched_measurement_indices
+
+        # 5. For the matched components, separate them based on whether the master component is frozen
+        subset_indices_matched_with = best_master_indices_in_subset[matched_mask]
+
+        if self.enable_freeze:
+            is_frozen_mask = model_subset.freeze_[subset_indices_matched_with] == 1.0
+
+            # Indices for fusion (master component is NOT frozen)
+            meas_indices_to_fuse = meas_indices_matched[~is_frozen_mask]
+            subset_indices_to_fuse_with = subset_indices_matched_with[~is_frozen_mask]
+        else:
+            meas_indices_to_fuse = meas_indices_matched
+            subset_indices_to_fuse_with = subset_indices_matched_with
+
+        # New Gaussians that matched a frozen component are simply discarded (not fused, not added as novel)
         
         if len(meas_indices_to_fuse) == 0:
             return 0, unmatched_measurement_indices
 
-        # 5. Get the corresponding master components to fuse with
-        subset_indices_to_fuse_with = best_master_indices_in_subset[matched_mask]
+        # 6. Get the corresponding master components to fuse with
         # Map subset indices back to original master model indices
         master_indices_to_fuse_with = np.array(candidate_indices)[subset_indices_to_fuse_with]
 
-        # 6. Perform vectorized fusion for all matched pairs
+        # 7. Perform vectorized fusion for all matched pairs with non-frozen components
         self._fuse_components_vectorized(master_indices_to_fuse_with, gmm_measurement, meas_indices_to_fuse)
         
         # The number of fused components is the number of unique master components that were updated
@@ -274,16 +294,16 @@ class MasterGMM:
 
         new_gmm = gmm_measurement.submap_from_indices(new_components_ids)
 
-        print("==================================")
-        print(f"new gaussians uncerainties: {new_gmm.uncertainty_}")
-        print("==================================")
-
         self.model.merge(new_gmm)
         
         # Update spatial index with new components
         for i in range(old_n_components, self.model.n_components_):
             mean = self.model.means_[i, :3]
             self.rtree.insert(i, (*mean, *mean))
+
+    def freeze_components(self, freeze_fusion_threshold):
+        freeze_indices = self.model.fusion_counts_ > freeze_fusion_threshold
+        self.model.freeze_[freeze_indices] = 1.
 
     def prune_stale_components(self, min_observations=5, max_fusion_ratio=0.4):
         """
@@ -309,7 +329,7 @@ class MasterGMM:
         
         # Determine which components to keep based on the criteria
         # Keep if: under-observed OR has a good fusion ratio
-        keep_mask = (obs_counts < min_observations) | (fusion_ratios >= max_fusion_ratio)
+        keep_mask = (obs_counts < min_observations) | (fusion_ratios >= max_fusion_ratio) | (self.model.freeze_ == 1.0)
         
         n_pruned = np.sum(~keep_mask)
         
@@ -479,6 +499,11 @@ class SOGMMROSNode:
         self.prune_min_observations = rospy.get_param("~prune_min_observations", 5)
         self.prune_interval_frames = rospy.get_param("~prune_interval_frames", 10)
 
+        # Freezing parameters
+        self.enable_freeze = rospy.get_param("~enable_freeze", True)
+        self.freeze_interval_frames = rospy.get_param("~freeze_interval_frames", 5)
+        self.freeze_fusion_threshold = rospy.get_param("~freeze_fusion_threshold", 20)
+
     def _setup_communication(self):
         """Initialize ROS publishers and subscribers."""
         # Publishers
@@ -501,7 +526,7 @@ class SOGMMROSNode:
     def _setup_core_components(self):
         """Initialize core SOGMM processing components and threading."""
         # Core SOGMM components
-        self.master_gmm = MasterGMM(self.uncertainty_heuristic, self.uncertainty_scaler)
+        self.master_gmm = MasterGMM(self.uncertainty_heuristic, self.uncertainty_scaler, self.enable_freeze)
         # self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=100)
         self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=self.tolerance, reg_covar=self.reg_covar, max_iter=self.max_iter)
         # self.learner = GPUFit(bandwidth=self.bandwidth)
@@ -601,6 +626,11 @@ class SOGMMROSNode:
                 self.master_gmm.prune_stale_components(
                     min_observations=self.prune_min_observations,
                     max_fusion_ratio=self.max_fusion_ratio
+                )
+
+            if self.frame_count % self.freeze_interval_frames == 0 and self.enable_freeze:
+                self.master_gmm.freeze_components(
+                    freeze_fusion_threshold=self.freeze_fusion_threshold
                 )
 
             proc_timestamp = time.time()
@@ -889,6 +919,7 @@ class SOGMMROSNode:
             
         elif self.color_by == "stability":
             color = cm.RdYlGn(master_gmm.model.last_displacements_[i])
+            color = cm.RdYlGn(master_gmm.model.uncertainty_[i])
             marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
             marker.color.a = 0.8
             
@@ -955,8 +986,8 @@ class SOGMMROSNode:
     def _get_text_content(self, master_gmm, i):
         """Get text content for marker based on visualization mode."""
         if self.color_by == "confidence":
-            # return f"C:{master_gmm.model.fusion_counts_[i]}"
-            return f"C:{master_gmm.model.uncertainty_[i]}"
+            return f"C:{master_gmm.model.fusion_counts_[i]}"
+            # return f"C:{master_gmm.model.uncertainty_[i]}"
         elif self.color_by == "stability":
             return f"D:{master_gmm.model.last_displacements_[i]:.3f}"
         elif self.color_by == "combined":

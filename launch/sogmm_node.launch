@@ -14,7 +14,7 @@
         <param name="tolerance" value="1e-10" type="double" />
         <param name="reg_covar" value="1e-10" type="double" />
         <param name="max_iter" value="100" type="int" />
-        <param name="kl_div_match_thresh" value="50.0" />
+        <param name="kl_div_match_thresh" value="100.0" />
         
         <!-- Visualization Parameters -->
         <param name="enable_visualization" value="true" />
@@ -29,7 +29,7 @@
 
         <param name="uncertainty_heuristic" value="confidence" />
         <!-- Options: intensity, confidence, stability, combined -->
-        <param name="uncertainty_scaler" value="2.0" />
+        <param name="uncertainty_scaler" value="10.0" />
         
         <!-- Processing Parameters -->
         <param name="processing_decimation" value="1" />
@@ -40,6 +40,11 @@
         <param name="max_fusion_ratio" value="0.4" />
         <param name="prune_min_observations" value="5" />
         <param name="prune_interval_frames" value="10" />
+
+        <!-- Freezing Parameters -->
+        <param name="enable_freeze" value="false" />
+        <param name="freeze_interval_frames" value="5" />
+        <param name="freeze_fusion_threshold" value="20" />
     </node>
     
     <arg name="rviz" default="false" />
