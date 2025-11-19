@@ -28,10 +28,11 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 
 class MasterGMM:
-    def __init__(self, uncertainty_heuristic):
+    def __init__(self, uncertainty_heuristic, uncertainty_scaler):
         self.model = None
 
         self.uncertainty_heuristic = uncertainty_heuristic
+        self.uncertainty_scaler = uncertainty_scaler
 
         # R-tree for spatial indexing of GMM components
         self.init_r_tree()
@@ -266,7 +267,7 @@ class MasterGMM:
         displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
         self.model.last_displacements_[master_indices] = displacements
 
-        self.model.uncertainty_[master_indices] = self._calculate_normalization_values(master_indices)
+        self.model.uncertainty_[master_indices] = self._calculate_uncertainty(master_indices)
 
 
     def _add_new_components(self, gmm_measurement, new_components_ids):
@@ -275,6 +276,10 @@ class MasterGMM:
         old_n_components = self.model.n_components_
 
         new_gmm = gmm_measurement.submap_from_indices(new_components_ids)
+
+        print("==================================")
+        print(f"new gaussians uncerainties: {new_gmm.uncertainty_}")
+        print("==================================")
 
         self.model.merge(new_gmm)
         
@@ -367,7 +372,7 @@ class MasterGMM:
         self.fusion_counts[master_idx] += 1
         self.last_displacements[master_idx] = displacement
 
-    def _calculate_normalization_values(self, master_indices):
+    def _calculate_uncertainty(self, master_indices):
         """Calculate normalized values for color mapping based on selected mode."""
         norm_values = []
         
@@ -377,7 +382,8 @@ class MasterGMM:
             # norm_values = [c / max(1.0, max_log_count) for c in log_counts]
 
             # norm_values = [-np.exp(-c/2.0)+1 for c in self.model.fusion_counts_]
-            return -np.exp(-self.model.fusion_counts_[master_indices]/2.0)+1
+            # return -np.exp(-self.model.fusion_counts_[master_indices]/2.0)+1
+            return np.exp(-self.model.fusion_counts_[master_indices]/self.uncertainty_scaler)
             
         elif self.uncertainty_heuristic == "stability":
             for idx in range(len(self.model.means_)):
@@ -464,6 +470,7 @@ class SOGMMROSNode:
         self.displacement_score_factor = rospy.get_param("~displacement_score_factor", 0.05)
 
         self.uncertainty_heuristic = rospy.get_param("~uncertainty_heuristic", "confidence")  # Options: intensity, confidence, stability, combined
+        self.uncertainty_scaler = rospy.get_param("~uncertainty_scaler", 2.0)
         
         # Processing parameters
         self.processing_decimation = rospy.get_param("~processing_decimation", 1)
@@ -497,7 +504,7 @@ class SOGMMROSNode:
     def _setup_core_components(self):
         """Initialize core SOGMM processing components and threading."""
         # Core SOGMM components
-        self.master_gmm = MasterGMM(self.uncertainty_heuristic)
+        self.master_gmm = MasterGMM(self.uncertainty_heuristic, self.uncertainty_scaler)
         # self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=100)
         self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=self.tolerance, reg_covar=self.reg_covar, max_iter=self.max_iter)
         # self.learner = GPUFit(bandwidth=self.bandwidth)
@@ -879,7 +886,7 @@ class SOGMMROSNode:
     def _set_marker_color(self, marker, master_gmm, i):
         """Set marker color based on visualization mode."""
         if self.color_by == "confidence":
-            color = cm.plasma(master_gmm.model.uncertainty_[i])
+            color = cm.plasma(-master_gmm.model.uncertainty_[i]+1.)
             marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
             marker.color.a = 0.8
             
@@ -951,7 +958,8 @@ class SOGMMROSNode:
     def _get_text_content(self, master_gmm, i):
         """Get text content for marker based on visualization mode."""
         if self.color_by == "confidence":
-            return f"C:{master_gmm.model.fusion_counts_[i]}"
+            # return f"C:{master_gmm.model.fusion_counts_[i]}"
+            return f"C:{master_gmm.model.uncertainty_[i]}"
         elif self.color_by == "stability":
             return f"D:{master_gmm.model.last_displacements_[i]:.3f}"
         elif self.color_by == "combined":
