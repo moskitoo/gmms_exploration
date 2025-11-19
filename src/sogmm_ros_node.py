@@ -495,9 +495,9 @@ class SOGMMROSNode:
         try:
             start_time = time.time()
 
-            rospy.loginfo("===============================================")
-            rospy.loginfo(f"CONFIG: {self.learner.tol}, {self.learner.reg_covar}, {self.learner.max_iter}")
-            rospy.loginfo("===============================================")
+            # rospy.loginfo("===============================================")
+            # rospy.loginfo(f"CONFIG: {self.learner.tol}, {self.learner.reg_covar}, {self.learner.max_iter}")
+            # rospy.loginfo("===============================================")
 
 
             pcld = self.preprocess_point_cloud(msg)
@@ -511,14 +511,14 @@ class SOGMMROSNode:
             local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
             local_model_gpu.to_host(local_model_cpu)
 
-            cov_reshaped = local_model_cpu.covariances_.reshape(local_model_cpu.covariances_.shape[0],4,4)
-            cov_3_3 = cov_reshaped[:,0:3, 0:3]
-            mean_cov = cov_3_3.mean(axis=0)
+            # cov_reshaped = local_model_cpu.covariances_.reshape(local_model_cpu.covariances_.shape[0],4,4)
+            # cov_3_3 = cov_reshaped[:,0:3, 0:3]
+            # mean_cov = cov_3_3.mean(axis=0)
 
-            rospy.loginfo("===============================================")
-            # rospy.loginfo(f"COVARIANCE: {mean_cov}")
-            rospy.loginfo(f"COVARIANCE: {local_model_cpu.covariances_}")
-            rospy.loginfo("===============================================")
+            # rospy.loginfo("===============================================")
+            # # rospy.loginfo(f"COVARIANCE: {mean_cov}")
+            # rospy.loginfo(f"COVARIANCE: {local_model_cpu.covariances_}")
+            # rospy.loginfo("===============================================")
 
             gira_timestamp = time.time()
             gira_time = gira_timestamp - gmm_start_time
