@@ -691,9 +691,11 @@ class SOGMMROSNode:
         norm_values = []
         
         if self.color_by == "confidence":
-            log_counts = [np.log1p(c) for c in master_gmm.model.fusion_counts_]
-            max_log_count = max(log_counts) if log_counts else 1.0
-            norm_values = [c / max(1.0, max_log_count) for c in log_counts]
+            # log_counts = [np.log1p(c) for c in master_gmm.model.fusion_counts_]
+            # max_log_count = max(log_counts) if log_counts else 1.0
+            # norm_values = [c / max(1.0, max_log_count) for c in log_counts]
+
+            norm_values = [-np.exp(-c/2.0)+1 for c in master_gmm.model.fusion_counts_]
             
         elif self.color_by == "stability":
             for idx in range(len(master_gmm.model.means_)):
