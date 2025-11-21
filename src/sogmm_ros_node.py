@@ -25,6 +25,7 @@ from sogmm_gpu import SOGMMInference as GPUInference
 from sogmm_gpu import SOGMMLearner as GPUFit
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
+from gmms_exploration.msg import GaussianMixtureModel, GaussianComponent
 
 
 class MasterGMM:
@@ -513,6 +514,10 @@ class SOGMMROSNode:
         self.gmm_size_pub = rospy.Publisher(
             "/starling1/mpa/gmm_size", Int32, queue_size=1
         )
+
+        self.gmm_pub = rospy.Publisher(
+            "/starling1/mpa/gmm", GaussianMixtureModel, queue_size=1
+        )
         
         # Subscribers
         self.pc_sub = rospy.Subscriber(
@@ -642,6 +647,8 @@ class SOGMMROSNode:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
+            self.publish_gmm()
+
             full_processing_time = time.time() - start_time
             n_components = self.master_gmm.model.n_components_
             rospy.loginfo(
@@ -655,6 +662,21 @@ class SOGMMROSNode:
 
         except Exception as e:
             rospy.logerr(f"Error processing point cloud: {e}\n{traceback.format_exc()}")
+
+    def publish_gmm(self):
+
+        gmm_msg = GaussianMixtureModel()
+
+        for id in range(self.master_gmm.model.n_components_):
+            gaussian_component = GaussianComponent()
+            gaussian_component.mean = self.master_gmm.model.means_[id]
+            gaussian_component.covariance = self.master_gmm.model.covariances_[id]
+            gaussian_component.weight = self.master_gmm.model.weights_[id]
+            gmm_msg.components.append(gaussian_component)
+            gmm_msg.n_components = self.master_gmm.model.n_components_
+
+        self.gmm_pub.publish(gmm_msg)
+
 
     def transform_point_cloud(self, msg, points_3d_original, target_frame):
         try:
