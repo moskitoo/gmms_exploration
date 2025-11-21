@@ -4,7 +4,7 @@ float64[3] mean
 
 # Covariance matrix stored as a flat array (4x4 = 16 elements)
 # Row-major order: [cov(0,0), cov(0,1), ..., cov(3,3)]
-float64[16] covariance
+float64[9] covariance
 
 # Weight/prior probability of this component
 float64 weight
