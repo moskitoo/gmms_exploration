@@ -611,6 +611,10 @@ class SOGMMROSNode:
             "/starling1/mpa/tof_pc", PointCloud2, self.pointcloud_callback, queue_size=1
         )
 
+        self.uct_id_sub = rospy.Subscriber(
+            "/starling1/mpa/uct_id", Int32, self.uct_id_callback, queue_size=1
+        )
+
         # TF setup
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -652,6 +656,8 @@ class SOGMMROSNode:
         # Timing
         self.last_prune_time = rospy.Time.now().to_sec()
 
+        self.max_uct_id = 0
+
     def _log_initialization(self):
         """Log initialization parameters for debugging."""
         rospy.loginfo("SOGMM ROS Node initialized with parameters:")
@@ -667,6 +673,9 @@ class SOGMMROSNode:
         rospy.loginfo(f"    * Min observations: {self.prune_min_observations}")
         rospy.loginfo(f"    * Max fusion ratio: {self.max_fusion_ratio}")
         rospy.loginfo(f"    * Prune interval (frames): {self.prune_interval_frames}")
+
+    def uct_id_callback(self, msg: Int32):
+        self.max_uct_id = msg.data
 
     def pointcloud_callback(self, msg):
         """
@@ -790,6 +799,7 @@ class SOGMMROSNode:
             cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
             gaussian_component.covariance = cov3.flatten().tolist()
             gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
+            gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
             gmm_msg.components.append(gaussian_component)
 
         gmm_msg.n_components = self.master_gmm.model.n_components_
@@ -1067,6 +1077,17 @@ class SOGMMROSNode:
 
     def _set_marker_color(self, marker, master_gmm, i):
         """Set marker color based on visualization mode."""
+        
+        if i == self.max_uct_id:
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            marker.scale.x *= 3.
+            marker.scale.y *= 3.
+            marker.scale.z *= 3.
+            return
+
         if self.color_by == "confidence":
             color = cm.plasma(-master_gmm.model.uncertainty_[i] + 1.0)
             marker.color.r, marker.color.g, marker.color.b = (
@@ -1154,17 +1175,19 @@ class SOGMMROSNode:
 
     def _get_text_content(self, master_gmm, i):
         """Get text content for marker based on visualization mode."""
+        suffix = " [MAX]" if i == self.max_uct_id else ""
+
         if self.color_by == "confidence":
-            return f"C:{master_gmm.model.fusion_counts_[i]}"
+            return f"C:{master_gmm.model.fusion_counts_[i]}{suffix}"
             # return f"C:{master_gmm.model.uncertainty_[i]}"
         elif self.color_by == "stability":
-            return f"D:{master_gmm.model.last_displacements_[i]:.3f}"
+            return f"D:{master_gmm.model.last_displacements_[i]:.3f}{suffix}"
         elif self.color_by == "combined":
             count = master_gmm.model.fusion_counts_[i]
             disp = master_gmm.model.last_displacements_[i]
-            return f"C:{count} D:{disp:.3f}"
+            return f"C:{count} D:{disp:.3f}{suffix}"
         else:
-            return f"{master_gmm.model.means_[i, 3]:.2f}"
+            return f"{master_gmm.model.means_[i, 3]:.2f}{suffix}"
 
     def _add_clear_markers(self, marker_array, current_count, frame_id, timestamp):
         """Add markers to clear old components if count decreased."""
