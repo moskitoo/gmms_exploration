@@ -193,6 +193,7 @@ include_directories(
 ## Mark Python scripts for installation
 catkin_install_python(PROGRAMS
   src/sogmm_ros_node.py
+  src/sogmm_exploration_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

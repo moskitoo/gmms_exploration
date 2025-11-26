@@ -8,3 +8,5 @@ float64[9] covariance
 
 # Weight/prior probability of this component
 float64 weight
+
+float64 uncertainty
