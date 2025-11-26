@@ -28,12 +28,20 @@ from gmms_exploration.msg import GaussianMixtureModel, GaussianComponent
 
 
 class MasterGMM:
-    def __init__(self, uncertainty_heuristic, uncertainty_scaler, enable_freeze):
+    def __init__(
+        self,
+        uncertainty_heuristic,
+        uncertainty_scaler,
+        enable_freeze,
+        fusion_weight_update,
+    ):
         self.model = None
 
         self.uncertainty_heuristic = uncertainty_heuristic
         self.uncertainty_scaler = uncertainty_scaler
         self.enable_freeze = enable_freeze
+
+        self.fusion_weight_update = fusion_weight_update
 
         # R-tree for spatial indexing of GMM components
         self.init_r_tree()
@@ -262,6 +270,7 @@ class MasterGMM:
         w_i = self.model.weights_[master_indices]
         mu_i = self.model.means_[master_indices]
         cov_i = self.model.covariances_[master_indices].reshape(-1, 4, 4)
+        fusion_counts = self.model.fusion_counts_[master_indices]
 
         # Measurement components
         meas_comps_to_fuse = meas_gmm.submap_from_indices(meas_indices)
@@ -270,23 +279,47 @@ class MasterGMM:
         cov_j = meas_comps_to_fuse.covariances_.reshape(-1, 4, 4)
 
         # --- Perform fusion calculations in a vectorized manner ---
-        w_new = w_i + w_j
-        mu_new = (w_i[:, np.newaxis] * mu_i + w_j[:, np.newaxis] * mu_j) / w_new[
-            :, np.newaxis
-        ]
+        if self.fusion_weight_update:
+            # Effective weights for calculating the new mean and covariance
 
-        diff_i = mu_i - mu_new
-        diff_j = mu_j - mu_new
+            master_uncertainty = self.model.uncertainty_[master_indices]
+            # effective_w_i = 1.0 - master_uncertainty
 
-        # Use einsum for batched outer product: diff @ diff.T
-        # '...i,...j->...ij' computes the outer product for each vector in the batch
-        outer_i = np.einsum("...i,...j->...ij", diff_i, diff_i)
-        outer_j = np.einsum("...i,...j->...ij", diff_j, diff_j)
+            effective_w_i = fusion_counts.astype(float)
 
-        cov_new = (
-            w_i[:, np.newaxis, np.newaxis] * (cov_i + outer_i)
-            + w_j[:, np.newaxis, np.newaxis] * (cov_j + outer_j)
-        ) / w_new[:, np.newaxis, np.newaxis]
+            effective_w_j = np.ones_like(w_j, dtype=float)
+            w_sum_for_fusion = effective_w_i + effective_w_j
+
+            mu_new = (
+                effective_w_i[:, np.newaxis] * mu_i
+                + effective_w_j[:, np.newaxis] * mu_j
+            ) / w_sum_for_fusion[:, np.newaxis]
+
+            cov_new = (
+                effective_w_i[:, np.newaxis, np.newaxis]
+                * (cov_i + np.einsum("...i,...j->...ij", mu_i - mu_new, mu_i - mu_new))
+                + effective_w_j[:, np.newaxis, np.newaxis]
+                * (cov_j + np.einsum("...i,...j->...ij", mu_j - mu_new, mu_j - mu_new))
+            ) / w_sum_for_fusion[:, np.newaxis, np.newaxis]
+
+        else:
+            w_new = w_i + w_j
+            mu_new = (w_i[:, np.newaxis] * mu_i + w_j[:, np.newaxis] * mu_j) / w_new[
+                :, np.newaxis
+            ]
+
+            diff_i = mu_i - mu_new
+            diff_j = mu_j - mu_new
+
+            # Use einsum for batched outer product: diff @ diff.T
+            # '...i,...j->...ij' computes the outer product for each vector in the batch
+            outer_i = np.einsum("...i,...j->...ij", diff_i, diff_i)
+            outer_j = np.einsum("...i,...j->...ij", diff_j, diff_j)
+
+            cov_new = (
+                w_i[:, np.newaxis, np.newaxis] * (cov_i + outer_i)
+                + w_j[:, np.newaxis, np.newaxis] * (cov_j + outer_j)
+            ) / w_new[:, np.newaxis, np.newaxis]
 
         # --- Update master model state ---
         # This is tricky because multiple `meas_indices` can map to the same `master_index`.
@@ -557,6 +590,8 @@ class SOGMMROSNode:
         self.freeze_interval_frames = rospy.get_param("~freeze_interval_frames", 5)
         self.freeze_fusion_threshold = rospy.get_param("~freeze_fusion_threshold", 20)
 
+        self.fusion_weight_update = rospy.get_param("~fusion_weight_update", False)
+
     def _setup_communication(self):
         """Initialize ROS publishers and subscribers."""
         # Publishers
@@ -584,7 +619,10 @@ class SOGMMROSNode:
         """Initialize core SOGMM processing components and threading."""
         # Core SOGMM components
         self.master_gmm = MasterGMM(
-            self.uncertainty_heuristic, self.uncertainty_scaler, self.enable_freeze
+            self.uncertainty_heuristic,
+            self.uncertainty_scaler,
+            self.enable_freeze,
+            self.fusion_weight_update,
         )
         # self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=100)
         self.learner = GPUFit(

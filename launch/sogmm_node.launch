@@ -45,6 +45,8 @@
         <param name="enable_freeze" value="false" />
         <param name="freeze_interval_frames" value="5" />
         <param name="freeze_fusion_threshold" value="20" />
+
+        <param name="fusion_weight_update" value="true" />
     </node>
     
     <arg name="rviz" default="false" />
