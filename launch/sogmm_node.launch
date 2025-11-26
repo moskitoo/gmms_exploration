@@ -12,7 +12,7 @@
         <!-- SOGMM Algorithm Parameters -->
         <param name="bandwidth" value="0.02" />
         <param name="tolerance" value="1e-10" type="double" />
-        <param name="reg_covar" value="1e-10" type="double" />
+        <param name="reg_covar" value="1e-8" type="double" />
         <param name="max_iter" value="100" type="int" />
         <param name="kl_div_match_thresh" value="100.0" />
         

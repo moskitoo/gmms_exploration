@@ -631,6 +631,12 @@ class SOGMMROSNode:
             reg_covar=self.reg_covar,
             max_iter=self.max_iter,
         )
+        self.fallback_learner = GPUFit(
+                        bandwidth=self.bandwidth,
+                        tolerance=self.tolerance,
+                        reg_covar=max(self.reg_covar * 100.0, 1e-3),
+                        max_iter=self.max_iter,
+                    )
         # self.learner = GPUFit(bandwidth=self.bandwidth)
         self.inference = GPUInference()
 
@@ -699,7 +705,18 @@ class SOGMMROSNode:
 
             # 1. Generate a local GMM from the current point cloud
             local_model_gpu = GPUContainerf4()
-            self.learner.fit(self.extract_ms_data(pcld), pcld, local_model_gpu)
+            ms_data = self.extract_ms_data(pcld)
+
+            try:
+                self.learner.fit(ms_data, pcld, local_model_gpu)
+            except RuntimeError as e:
+                # Catch Open3D/CUDA Cholesky decomposition failure
+                if "potrfBatched failed" in str(e):
+                    rospy.logwarn("GPU GMM fitting failed (singular covariance). Retrying with higher regularization...")
+                    # Create a temporary learner with higher regularization (e.g. 1e-3) to ensure stability
+                    self.fallback_learner.fit(ms_data, pcld, local_model_gpu)
+                else:
+                    raise e
             local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
             local_model_gpu.to_host(local_model_cpu)
 
