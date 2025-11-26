@@ -799,9 +799,12 @@ class SOGMMROSNode:
             cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
             gaussian_component.covariance = cov3.flatten().tolist()
             gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
+            gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
+            gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
+            gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
             gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
             gmm_msg.components.append(gaussian_component)
-
+            
         gmm_msg.n_components = self.master_gmm.model.n_components_
 
         self.gmm_pub.publish(gmm_msg)
@@ -1178,8 +1181,8 @@ class SOGMMROSNode:
         suffix = " [MAX]" if i == self.max_uct_id else ""
 
         if self.color_by == "confidence":
-            return f"C:{master_gmm.model.fusion_counts_[i]}{suffix}"
-            # return f"C:{master_gmm.model.uncertainty_[i]}"
+            # return f"C:{master_gmm.model.fusion_counts_[i]}{suffix}"
+            return f"C:{master_gmm.model.uncertainty_[i]}"
         elif self.color_by == "stability":
             return f"D:{master_gmm.model.last_displacements_[i]:.3f}{suffix}"
         elif self.color_by == "combined":

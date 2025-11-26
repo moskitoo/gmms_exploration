@@ -10,3 +10,9 @@ float64[9] covariance
 float64 weight
 
 float64 uncertainty
+
+int32 fusion_count
+
+int32 observation_count
+
+float64 last_displacement

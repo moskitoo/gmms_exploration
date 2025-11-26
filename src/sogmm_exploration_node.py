@@ -69,6 +69,14 @@ class SOGMMExplorationNode:
         uct_msg.data = max_uct_id
         self.uct_id_pub.publish(uct_msg)
 
+        rospy.logdebug(f"max_uct_id mean: {gmm[max_uct_id].mean}")
+        rospy.logdebug(f"max_uct_id covariance: {gmm[max_uct_id].covariance}")
+        rospy.logdebug(f"max_uct_id uncertainty: {gmm[max_uct_id].uncertainty}")
+
+        rospy.logdebug(f"max_uct_id fusion count: {gmm[max_uct_id].fusion_count}")
+        rospy.logdebug(f"max_uct_id observation_count: {gmm[max_uct_id].observation_count}")
+        rospy.logdebug(f"max_uct_id last_displacement: {gmm[max_uct_id].last_displacement}")
+
         #here we can also sample viewpoints around that gaussian
         # we need to check if there is no collision with other etc?
 
