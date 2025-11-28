@@ -693,6 +693,9 @@ class SOGMMROSNode:
         self.marker_pub = rospy.Publisher(
             "/starling1/mpa/gmm_markers", MarkerArray, queue_size=1
         )
+        self.grid_marker_pub = rospy.Publisher(
+            "/starling1/mpa/grid_markers", MarkerArray, queue_size=1
+        )
         self.gmm_size_pub = rospy.Publisher(
             "/starling1/mpa/gmm_size", Int32, queue_size=1
         )
@@ -868,6 +871,7 @@ class SOGMMROSNode:
             viz_start_time = time.time()
             if self.enable_visualization and self.master_gmm.model.n_components_ > 0:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
+                self.grid_marker_pub.publish(self.exploration_grid.get_grid_vis(self.target_frame, msg.header.stamp))
             viz_time = time.time() - viz_start_time
 
             self.publish_gmm()
@@ -1013,8 +1017,8 @@ class SOGMMROSNode:
         marker_array = MarkerArray()
         # norm_values = self._calculate_normalization_values(master_gmm)
 
-        grid_markers = self.exploration_grid.get_grid_vis(frame_id, timestamp)
-        marker_array.markers.extend(grid_markers.markers)
+        # grid_markers = self.exploration_grid.get_grid_vis(frame_id, timestamp)
+        # marker_array.markers.extend(grid_markers.markers)
 
         # Create markers for each Gaussian component
         for i in range(len(master_gmm.model.means_)):
