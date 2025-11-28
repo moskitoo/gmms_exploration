@@ -524,102 +524,6 @@ class MasterGMM:
 
         return norm_values
 
-class ExplorationGrid():
-    def __init__(self, resolution=2.0):
-        self.resolution = resolution
-        self.cells = {}  # Dictionary to store sparse grid data: (ix, iy) -> list of uncertainties
-
-    def update_grid(self, gmm, rtree):
-        """
-        Updates the sparse grid with uncertainty values from the GMM.
-        
-        Args:
-            gmm: The GMM model object (expected to have means_ and uncertainty_ attributes).
-            rtree: The R-tree index (unused in this implementation but kept for interface compatibility).
-        """
-        self.cells.clear()
-        
-        if gmm is None or gmm.n_components_ == 0:
-            return
-
-        # Extract means and uncertainties
-        # means_ is (N, 4) where columns are x, y, z, intensity
-        means = gmm.means_
-        uncertainties = gmm.uncertainty_
-
-        # Vectorized calculation of grid indices
-        # We only care about x and y for the 2D grid
-        ixs = np.floor(means[:, 0] / self.resolution).astype(int)
-        iys = np.floor(means[:, 1] / self.resolution).astype(int)
-
-        # Aggregate uncertainties into cells
-        for i in range(gmm.n_components_):
-            key = (ixs[i], iys[i])
-            if key not in self.cells:
-                self.cells[key] = []
-            self.cells[key].append(uncertainties[i])
-
-    def get_grid_vis(self, frame_id="map", timestamp=None):
-        """
-        Generates a MarkerArray for visualizing the uncertainty grid.
-        """
-        if timestamp is None:
-            timestamp = rospy.Time.now()
-
-        marker_array = MarkerArray()
-        
-        # Add a marker to delete all previous markers in this namespace
-        delete_marker = Marker()
-        delete_marker.action = Marker.DELETEALL
-        delete_marker.header.frame_id = frame_id
-        delete_marker.header.stamp = timestamp
-        delete_marker.ns = "exploration_grid"
-        marker_array.markers.append(delete_marker)
-
-        marker_id = 0
-        for (ix, iy), u_values in self.cells.items():
-            if not u_values:
-                continue
-
-            mean_uncertainty = np.mean(u_values)
-            
-            marker = Marker()
-            marker.header.frame_id = frame_id
-            marker.header.stamp = timestamp
-            marker.ns = "exploration_grid"
-            marker.id = marker_id
-            marker_id += 1
-            marker.type = Marker.CUBE
-            marker.action = Marker.ADD
-            marker.lifetime = rospy.Duration(0)
-
-            # Position: Center of the grid cell
-            marker.pose.position.x = (ix + 0.5) * self.resolution
-            marker.pose.position.y = (iy + 0.5) * self.resolution
-            # Height (z) is scaled by uncertainty. 
-            # We place the base at z=0 (or relative to map). 
-            height = max(0.05, mean_uncertainty) # Minimum height for visibility
-            marker.pose.position.z = height / 2.0
-
-            marker.pose.orientation.w = 1.0
-
-            # Scale: x and y match the grid resolution, z matches uncertainty
-            marker.scale.x = self.resolution
-            marker.scale.y = self.resolution
-            marker.scale.z = height
-
-            # Color: Map uncertainty to color
-            # High uncertainty (1.0) -> Hot/Red, Low (0.0) -> Cool/Blue
-            color = cm.plasma(mean_uncertainty)
-            marker.color.r = color[0]
-            marker.color.g = color[1]
-            marker.color.b = color[2]
-            marker.color.a = 0.8
-
-            marker_array.markers.append(marker)
-
-        return marker_array
-
 class SOGMMROSNode:
     """
     ROS Node for processing point clouds with SOGMM and visualizing results
@@ -726,7 +630,6 @@ class SOGMMROSNode:
             self.enable_freeze,
             self.fusion_weight_update,
         )
-        self.exploration_grid = ExplorationGrid()
         # self.learner = GPUFit(bandwidth=self.bandwidth, tolerance=1e-2, reg_covar=1e-6, max_iter=100)
         self.learner = GPUFit(
             bandwidth=self.bandwidth,
@@ -846,8 +749,6 @@ class SOGMMROSNode:
                 match_threshold=self.kl_div_match_thresh,
             )
 
-            self.exploration_grid.update_grid(self.master_gmm.model, self.master_gmm.rtree)
-
             # 3. Periodically prune outliers (every N frames)
             self.frame_count += 1
             if self.frame_count % self.prune_interval_frames == 0:
@@ -871,7 +772,6 @@ class SOGMMROSNode:
             viz_start_time = time.time()
             if self.enable_visualization and self.master_gmm.model.n_components_ > 0:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
-                self.grid_marker_pub.publish(self.exploration_grid.get_grid_vis(self.target_frame, msg.header.stamp))
             viz_time = time.time() - viz_start_time
 
             self.publish_gmm()
