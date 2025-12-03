@@ -25,6 +25,7 @@ from sogmm_gpu import SOGMMLearner as GPUFit
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 from gmms_exploration.msg import GaussianMixtureModel, GaussianComponent
+from typing import List
 
 
 class MasterGMM:
@@ -58,6 +59,9 @@ class MasterGMM:
         Args:
             gmm_measurement: Incoming GMM measurement to integrate
             match_threshold: KL divergence threshold for component matching
+            
+        Returns:
+            list: Indices of components in the master model that were updated or added.
         """
         n_incoming = len(gmm_measurement.weights_)
         rospy.loginfo(f"Processing {n_incoming} incoming Gaussians")
@@ -65,17 +69,27 @@ class MasterGMM:
         # Handle empty master GMM - initialize with first measurement
         if self.model is None:
             self._initialize_from_measurement(gmm_measurement)
-            return
+            return list(range(self.model.n_components_))
 
         candidate_indices = self._find_spatial_candidates(gmm_measurement)
         self._update_observation_counts(candidate_indices)
 
-        n_fused, new_components_ids = self._match_and_fuse_components(
+        n_fused, master_indices_to_fuse_with, new_components_ids = self._match_and_fuse_components(
             gmm_measurement, candidate_indices, match_threshold
         )
 
+        updated_indices = []
+        
+        # Add indices of components that were fused (updated)
+        if len(master_indices_to_fuse_with) > 0:
+            updated_indices.extend(np.unique(master_indices_to_fuse_with).tolist())
+
+        # Add indices of components that were added (novel)
         if len(new_components_ids) > 0:
+            start_idx = self.model.n_components_
             self._add_new_components(gmm_measurement, new_components_ids)
+            end_idx = self.model.n_components_
+            updated_indices.extend(list(range(start_idx, end_idx)))
 
         # self._normalize_weights()
         self.model.normalize_weights()
@@ -83,6 +97,8 @@ class MasterGMM:
         # Log results
         n_novel = len(new_components_ids)
         rospy.loginfo(f"Fused: {n_fused}, Novel: {n_novel}")
+        
+        return updated_indices
 
     def _initialize_from_measurement(self, gmm_measurement):
         """Initialize master GMM from first measurement."""
@@ -117,10 +133,10 @@ class MasterGMM:
         Match measurement components to master components and fuse them using vectorized operations.
 
         Returns:
-            tuple: (number_fused, list_of_unmatched_components)
+            tuple: (number_fused, list_of_fused_master_indices, list_of_unmatched_measurement_indices)
         """
         if not candidate_indices:
-            return 0, list(range(gmm_measurement.n_components_))
+            return 0, [], list(range(gmm_measurement.n_components_))
 
         # 1. Create a subset of the master model for matching (now includes frozen components)
         model_subset = self.model.submap_from_indices(candidate_indices)
@@ -138,7 +154,7 @@ class MasterGMM:
         # Check if kl_matrix is valid for argmin operation
         if kl_matrix.shape[1] == 0:
             # No master components to match against, all incoming are novel
-            return 0, list(range(gmm_measurement.n_components_))
+            return 0, [], list(range(gmm_measurement.n_components_))
 
         # 3. Find the best matches for each measurement component
         best_master_indices_in_subset = np.argmin(kl_matrix, axis=1)
@@ -150,7 +166,7 @@ class MasterGMM:
         unmatched_measurement_indices = np.where(~matched_mask)[0].tolist()
 
         if len(meas_indices_matched) == 0:
-            return 0, unmatched_measurement_indices
+            return 0, [], unmatched_measurement_indices
 
         # 5. For the matched components, separate them based on whether the master component is frozen
         subset_indices_matched_with = best_master_indices_in_subset[matched_mask]
@@ -168,7 +184,7 @@ class MasterGMM:
         # New Gaussians that matched a frozen component are simply discarded (not fused, not added as novel)
 
         if len(meas_indices_to_fuse) == 0:
-            return 0, unmatched_measurement_indices
+            return 0, [], unmatched_measurement_indices
 
         # 6. Get the corresponding master components to fuse with
         # Map subset indices back to original master model indices
@@ -184,7 +200,7 @@ class MasterGMM:
         # The number of fused components is the number of unique master components that were updated
         n_fused = len(np.unique(master_indices_to_fuse_with))
 
-        return n_fused, unmatched_measurement_indices
+        return n_fused, master_indices_to_fuse_with, unmatched_measurement_indices
 
     def _calculate_kl_matrix(self, means1, covs1, means2, covs2, symmetric=True):
         """
@@ -355,12 +371,30 @@ class MasterGMM:
 
         new_gmm = gmm_measurement.submap_from_indices(new_components_ids)
 
+        new_gmm = self.remove_outliers(new_gmm)
+
         self.model.merge(new_gmm)
 
         # Update spatial index with new components
         for i in range(old_n_components, self.model.n_components_):
             mean = self.model.means_[i, :3]
             self.rtree.insert(i, (*mean, *mean))
+
+    def remove_outliers(self, gmm):
+        gaussians_to_keep = []
+        for id in range(gmm.n_components_):
+            covariance_flat = gmm.covariances_[id]
+            cov_4x4 = covariance_flat.reshape(4, 4)
+            cov_3d = cov_4x4[:3, :3]
+
+            eigenvals, eigenvecs = np.linalg.eigh(cov_3d)
+            
+            eigenvals = np.abs(eigenvals)
+
+            if eigenvals[2] < 10 * eigenvals[1]:
+                gaussians_to_keep.append(id)
+
+        return gmm.submap_from_indices(gaussians_to_keep)
 
     def freeze_components(self, freeze_fusion_threshold):
         freeze_indices = self.model.fusion_counts_ > freeze_fusion_threshold
@@ -744,7 +778,7 @@ class SOGMMROSNode:
             gira_time = gira_timestamp - gmm_start_time
 
             # 2. Update the master GMM with the new local measurement
-            self.master_gmm.update(
+            updated_indices = self.master_gmm.update(
                 gmm_measurement=local_model_cpu,
                 match_threshold=self.kl_div_match_thresh,
             )
@@ -774,7 +808,7 @@ class SOGMMROSNode:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
             viz_time = time.time() - viz_start_time
 
-            self.publish_gmm()
+            self.publish_gmm(updated_indices)
 
             full_processing_time = time.time() - start_time
             n_components = self.master_gmm.model.n_components_
@@ -790,10 +824,11 @@ class SOGMMROSNode:
         except Exception as e:
             rospy.logerr(f"Error processing point cloud: {e}\n{traceback.format_exc()}")
 
-    def publish_gmm(self):
+    def publish_gmm(self, updated_indices: List[int]):
         gmm_msg = GaussianMixtureModel()
 
         for idx in range(self.master_gmm.model.n_components_):
+            # if idx in updated_indices:
             gaussian_component = GaussianComponent()
             # use the first 3 dimensions of the mean (x,y,z)
             gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
@@ -808,6 +843,7 @@ class SOGMMROSNode:
             gmm_msg.components.append(gaussian_component)
             
         gmm_msg.n_components = self.master_gmm.model.n_components_
+        # gmm_msg.n_components = len(updated_indices)
 
         self.gmm_pub.publish(gmm_msg)
 
