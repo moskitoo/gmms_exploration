@@ -21,7 +21,7 @@
         <param name="visualization_scale" value="2.0" />
         <param name="color_by" value="confidence" />
         <!-- Options: intensity, confidence, stability, combined -->
-        <param name="add_metric_text" value="true" />
+        <param name="add_metric_text" value="false" />
         <param name="suspicious_displacement" value="0.001" />
         <param name="unstable_displacement" value="0.4" />
         <param name="displacement_score_factor" value="0.15" />
@@ -42,7 +42,7 @@
         <param name="prune_interval_frames" value="10" />
 
         <!-- Freezing Parameters -->
-        <param name="enable_freeze" value="false" />
+        <param name="enable_freeze" value="true" />
         <param name="freeze_interval_frames" value="5" />
         <param name="freeze_fusion_threshold" value="20" />
 
