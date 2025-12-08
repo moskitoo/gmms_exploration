@@ -1,0 +1,10 @@
+# Service to command the drone to fly a trajectory to a goal position
+# If use_default_goal is true or goal is (0,0,0), the default goal from params is used.
+#
+# Request:
+geometry_msgs/Point goal         # Goal position (ignored if use_default_goal is true)
+bool use_default_goal            # Set true to use default goal from params
+---
+# Response:
+bool success                    # True if mission completed successfully
+string message                  # Status or error message

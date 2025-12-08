@@ -59,11 +59,11 @@ add_message_files(
 )
 
 ## Generate services in the 'srv' folder
-# add_service_files(
-#   FILES
-#   Service1.srv
-#   Service2.srv
-# )
+add_service_files(
+  FILES
+  FlyTrajectory.srv
+  GetViewpoint.srv
+)
 
 ## Generate actions in the 'action' folder
 # add_action_files(
@@ -76,6 +76,7 @@ add_message_files(
 generate_messages(
   DEPENDENCIES
   std_msgs
+  geometry_msgs
 )
 
 ################################################
@@ -194,6 +195,7 @@ include_directories(
 catkin_install_python(PROGRAMS
   src/sogmm_ros_node.py
   src/sogmm_exploration_node.py
+  src/sogmm_grid_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
