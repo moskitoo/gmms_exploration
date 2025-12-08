@@ -41,8 +41,8 @@ class TopoTree:
         self.goal_node = None
 
         # (x,y) bounds
-        # self.bounds = [(-1.0, 9.), (-3., 3.25)]
-        self.bounds = [(-3.5, 11.5), (-6., 6)]
+        self.bounds = [(-0.8, 8.7), (-2.75, 2.9)] # hidden obstacle
+        # self.bounds = [(-3.5, 11.25), (-6., 5.8)] # big empty arena
 
         # height=7.0, width=11, center_coorinates=(4.0, 0.0),
 
@@ -260,7 +260,7 @@ class TopoTree:
         point_homogenous[:3] = point
         point_in_body = np.linalg.inv(self.odom) @ point_homogenous
 
-        print(f"point in body: {point_in_body}")
+        # print(f"point in body: {point_in_body}")
         
         d = np.linalg.norm(point_in_body[1:3])
         dist = d / np.tan(fov /2.)
