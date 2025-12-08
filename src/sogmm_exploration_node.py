@@ -41,6 +41,7 @@ class SOGMMExplorationNode:
         self.grid_sub = rospy.Subscriber("/starling1/mpa/grid", Grid, self.grid_callback)
 
         self.viewpoint_marker_pub = rospy.Publisher("viewpoint_marker", Marker, queue_size=1)
+        self.path_marker_pub = rospy.Publisher("path_marker", Marker, queue_size=1)
 
         self.viewpoint_list = [Point(0.0, -1.0, 1.0), Point(3.0, -1.0, 1.0), Point(3.0, 2.0, 1.0), Point(0.0, 2.0, 1.0)]
         self.last_id = 0
@@ -90,6 +91,13 @@ class SOGMMExplorationNode:
 
         self.path_to_ftr = self.topo_tree.spin(means, uncertainties, self.ftr_goal_tol_, self.fail_pos_tol_, self.fail_yaw_tol_)
 
+        if self.path_to_ftr is None:
+            rospy.logerr("No path to frontier found")
+        else:
+            print("path to ftr: ", self.path_to_ftr)
+            path_marker = self.create_path_marker(self.path_to_ftr)
+            self.path_marker_pub.publish(path_marker)
+
     @staticmethod
     def create_viewpoint_marker(viewpoint):
         marker = Marker()
@@ -119,6 +127,36 @@ class SOGMMExplorationNode:
         marker.color.g = 1.0
         marker.color.b = 0.0
         marker.color.a = 1.0
+
+        return marker
+
+    @staticmethod
+    def create_path_marker(path):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "sogmm_path"
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.lifetime = rospy.Duration(0)
+
+        # Set scale
+        marker.scale.x = 0.1
+
+        # Set Color
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 0.
+        marker.color.a = 1.0
+
+        # Set points
+        for point in path:
+            p = Point()
+            p.x = point[0]
+            p.y = point[1]
+            p.z = 1.0  # Assuming a fixed height for visualization
+            marker.points.append(p)
 
         return marker
 
