@@ -71,7 +71,7 @@ class MasterGMM:
             self._initialize_from_measurement(gmm_measurement)
             return list(range(self.model.n_components_))
 
-        candidate_indices = self._find_spatial_candidates(gmm_measurement)
+        candidate_indices = self.find_spatial_candidates(gmm_measurement)
         self._update_observation_counts(candidate_indices)
 
         n_fused, master_indices_to_fuse_with, new_components_ids = self._match_and_fuse_components(
@@ -112,7 +112,7 @@ class MasterGMM:
 
         # self._normalize_weights() its probably not needed because newly created model will alreadyhave a normalised weightse
 
-    def _find_spatial_candidates(self, gmm_measurement):
+    def find_spatial_candidates(self, gmm_measurement):
         """Find master components spatially overlapping with measurement."""
         # Get bounding box of incoming measurement
         min_bounds = gmm_measurement.means_[:, :3].min(axis=0)
@@ -805,10 +805,10 @@ class SOGMMROSNode:
             # Visualize results - only if we have a model
             viz_start_time = time.time()
             if self.enable_visualization and self.master_gmm.model.n_components_ > 0:
-                self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp)
+                self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp, updated_indices)
             viz_time = time.time() - viz_start_time
 
-            self.publish_gmm(updated_indices)
+            self.publish_gmm(local_model_cpu)
 
             full_processing_time = time.time() - start_time
             n_components = self.master_gmm.model.n_components_
@@ -824,26 +824,28 @@ class SOGMMROSNode:
         except Exception as e:
             rospy.logerr(f"Error processing point cloud: {e}\n{traceback.format_exc()}")
 
-    def publish_gmm(self, updated_indices: List[int]):
+    def publish_gmm(self, local_model_cpu):
         gmm_msg = GaussianMixtureModel()
 
+        updated_indices = self.master_gmm.find_spatial_candidates(local_model_cpu)
+
         for idx in range(self.master_gmm.model.n_components_):
-            # if idx in updated_indices:
-            gaussian_component = GaussianComponent()
-            # use the first 3 dimensions of the mean (x,y,z)
-            gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
-            # extract the 4x4 covariance for this component and take the 3x3 spatial part
-            cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
-            gaussian_component.covariance = cov3.flatten().tolist()
-            gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
-            gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
-            gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
-            gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
-            gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
-            gmm_msg.components.append(gaussian_component)
+            if idx in updated_indices:
+                gaussian_component = GaussianComponent()
+                # use the first 3 dimensions of the mean (x,y,z)
+                gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
+                # extract the 4x4 covariance for this component and take the 3x3 spatial part
+                cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
+                gaussian_component.covariance = cov3.flatten().tolist()
+                gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
+                gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
+                gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
+                gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
+                gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
+                gmm_msg.components.append(gaussian_component)
             
-        gmm_msg.n_components = self.master_gmm.model.n_components_
-        # gmm_msg.n_components = len(updated_indices)
+        # gmm_msg.n_components = self.master_gmm.model.n_components_
+        gmm_msg.n_components = len(updated_indices)
 
         self.gmm_pub.publish(gmm_msg)
 
@@ -943,7 +945,7 @@ class SOGMMROSNode:
         scores = scores.flatten()
         return pcld[scores < self.l_thres, :]
 
-    def visualize_gmm(self, master_gmm, frame_id, timestamp):
+    def visualize_gmm(self, master_gmm, frame_id, timestamp, updated_indices=None):
         """
         Publish MarkerArray for RViz visualization
         """
@@ -958,9 +960,10 @@ class SOGMMROSNode:
 
         # Create markers for each Gaussian component
         for i in range(len(master_gmm.model.means_)):
+            updated_marker = updated_indices is not None and i in updated_indices
             # Create sphere marker
             sphere_marker = self._create_sphere_marker(
-                master_gmm, i, frame_id, timestamp
+                master_gmm, i, frame_id, timestamp, updated_marker
             )
             if sphere_marker:
                 marker_array.markers.append(sphere_marker)
@@ -1043,7 +1046,7 @@ class SOGMMROSNode:
 
         return norm_values
 
-    def _create_sphere_marker(self, master_gmm, i, frame_id, timestamp):
+    def _create_sphere_marker(self, master_gmm, i, frame_id, timestamp, updated_marker):
         """Create a sphere marker for a Gaussian component."""
         marker = Marker()
         marker.header.frame_id = frame_id
@@ -1065,7 +1068,7 @@ class SOGMMROSNode:
             return None
 
         # Set color based on visualization mode
-        self._set_marker_color(marker, master_gmm, i)
+        self._set_marker_color(marker, master_gmm, i, updated_marker)
 
         return marker
 
@@ -1119,7 +1122,7 @@ class SOGMMROSNode:
             marker.pose.orientation.w = 1.0
             return True
 
-    def _set_marker_color(self, marker, master_gmm, i):
+    def _set_marker_color(self, marker, master_gmm, i, updated_marker):
         """Set marker color based on visualization mode."""
         
         if i == self.max_uct_id:
@@ -1161,6 +1164,12 @@ class SOGMMROSNode:
             gray_val = float(intensity)
             marker.color.r = marker.color.g = marker.color.b = gray_val
             marker.color.a = float(min(1.0, max(0.3, intensity * 2.0)))
+
+        if updated_marker:
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.9
+            marker.color.a = 1.0
 
     def _set_combined_color(self, marker, master_gmm, i):
         """Set color for combined visualization mode."""
