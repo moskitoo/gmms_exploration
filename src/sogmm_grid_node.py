@@ -15,7 +15,7 @@ from rtree import index
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
-from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel
+from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel, Grid
 from gmms_exploration.srv import FlyTrajectory, GetViewpoint, GetViewpointResponse
 from rospy.impl.tcpros_service import Service
 
@@ -187,6 +187,14 @@ class ExplorationGrid:
             marker_array.markers.append(marker)
 
         return marker_array
+    
+    def compose_grid_msg(self):
+        msg = Grid()
+
+        msg.means.data = self.cluster_centroids.flatten()
+        msg.uncertainties.data = self.average_gradient_magnitudes
+
+        return msg
 
 
 class SOGMMGridNode:
@@ -220,6 +228,10 @@ class SOGMMGridNode:
 
         self.grid_marker_pub = rospy.Publisher(
             "/starling1/mpa/grid_markers", MarkerArray, queue_size=1
+        )
+
+        self.grid_pub = rospy.Publisher(
+            "/starling1/mpa/grid", Grid, queue_size=1
         )
 
         self.reached_target = True
@@ -272,6 +284,8 @@ class SOGMMGridNode:
             # rospy.logdebug(f"grid: \n{self.exploration_grid.grid}")
 
             self.exploration_grid.update_grid(means, covs, uct, weights)
+
+            self.grid_pub.publish(self.exploration_grid.compose_grid_msg())
 
             self.grid_marker_pub.publish(
                 self.exploration_grid.get_grid_vis("map", msg.header.stamp)

@@ -56,6 +56,7 @@ add_message_files(
   FILES
   GaussianComponent.msg
   GaussianMixtureModel.msg
+  Grid.msg
 )
 
 ## Generate services in the 'srv' folder
