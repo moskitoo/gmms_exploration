@@ -15,10 +15,9 @@ from rtree import index
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
-from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel
+from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel, Grid
 from gmms_exploration.srv import FlyTrajectory, GetViewpoint
-
-
+from scripts.topological_graph import TopoTree
 
 class SOGMMExplorationNode:
     def __init__(self):
@@ -34,14 +33,21 @@ class SOGMMExplorationNode:
 
         self.reached_target = True
 
+        self.topo_tree = TopoTree()
 
         self.fly_trajectory_client = rospy.ServiceProxy("/starling1/fly_trajectory", FlyTrajectory)
         self.get_viewpoint_client = rospy.ServiceProxy("get_viewpoint", GetViewpoint)
+
+        self.grid_sub = rospy.Subscriber("/starling1/mpa/grid", Grid, self.grid_callback)
 
         self.viewpoint_marker_pub = rospy.Publisher("viewpoint_marker", Marker, queue_size=1)
 
         self.viewpoint_list = [Point(0.0, -1.0, 1.0), Point(3.0, -1.0, 1.0), Point(3.0, 2.0, 1.0), Point(0.0, 2.0, 1.0)]
         self.last_id = 0
+
+        self.ftr_goal_tol_ = rospy.get_param('~ftr_goal_tol', 1.0)
+        self.fail_pos_tol_ = rospy.get_param('~fail_pos_tol', 0.1)
+        self.fail_yaw_tol_ = rospy.get_param('~fail_yaw_tol', 0.1)
 
     def execute_exploration(self):
 
@@ -75,6 +81,14 @@ class SOGMMExplorationNode:
                 self.reached_target = True
 
         rospy.loginfo(f"Response message: {response.message}")
+    
+    def grid_callback(self, msg):
+        means = msg.means.data
+        uncertainties = msg.uncertainties.data
+
+        means = np.array(means).reshape((-1,3))
+
+        self.path_to_ftr = self.topo_tree.spin(means, uncertainties, self.ftr_goal_tol_, self.fail_pos_tol_, self.fail_yaw_tol_)
 
     @staticmethod
     def create_viewpoint_marker(viewpoint):
@@ -118,7 +132,8 @@ class SOGMMExplorationNode:
 
         while not rospy.is_shutdown():
             try:
-                self.execute_exploration()
+                # self.execute_exploration()
+                pass
             except rospy.ServiceException as e:
                 rospy.logerr(f"Service call failed: {e}")
                 rospy.sleep(1.0) # Wait a bit before retrying

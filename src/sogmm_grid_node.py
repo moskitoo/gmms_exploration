@@ -188,6 +188,63 @@ class ExplorationGrid:
 
         return marker_array
     
+    def get_means_vis(self, means, frame_id="map", timestamp=None):
+        """
+        Generates a MarkerArray for visualizing the means as spheres.
+        """
+        if timestamp is None:
+            timestamp = rospy.Time.now()
+
+        marker_array = MarkerArray()
+
+        # Add a marker to delete all previous markers in this namespace
+        delete_marker = Marker()
+        delete_marker.action = Marker.DELETEALL
+        delete_marker.header.frame_id = frame_id
+        delete_marker.header.stamp = timestamp
+        delete_marker.ns = "means_vis"
+        marker_array.markers.append(delete_marker)
+
+        marker_id = 0
+
+        for i in range(means.shape[0]):
+            world_x, world_y, world_z = means[i]
+
+            marker = Marker()
+            marker.header.frame_id = frame_id
+            marker.header.stamp = timestamp
+            marker.ns = "means_vis"
+            marker.id = marker_id
+            marker_id += 1
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.lifetime = rospy.Duration(0)
+
+            marker.pose.position.x = world_x
+            marker.pose.position.y = world_y
+            marker.pose.position.z = world_z
+
+            # Set orientation
+            marker.pose.orientation.x = 0.0
+            marker.pose.orientation.y = 0.0
+            marker.pose.orientation.z = 0.0
+            marker.pose.orientation.w = 1.0
+
+            # Scale
+            marker.scale.x = 0.1
+            marker.scale.y = 0.1
+            marker.scale.z = 0.1
+
+            # Color
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker.color.a = 0.8
+
+            marker_array.markers.append(marker)
+
+        return marker_array
+
     def compose_grid_msg(self):
         msg = Grid()
 
@@ -228,6 +285,10 @@ class SOGMMGridNode:
 
         self.grid_marker_pub = rospy.Publisher(
             "/starling1/mpa/grid_markers", MarkerArray, queue_size=1
+        )
+
+        self.means_marker_pub = rospy.Publisher(
+            "/starling1/mpa/means_markers", MarkerArray, queue_size=1
         )
 
         self.grid_pub = rospy.Publisher(
@@ -289,6 +350,10 @@ class SOGMMGridNode:
 
             self.grid_marker_pub.publish(
                 self.exploration_grid.get_grid_vis("map", msg.header.stamp)
+            )
+
+            self.means_marker_pub.publish(
+                self.exploration_grid.get_means_vis(means, "map", msg.header.stamp)
             )
 
     def get_viewpoint_callback(self, req):

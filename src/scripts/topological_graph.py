@@ -30,7 +30,7 @@ class TopoTree:
         self.odom_threshold = 0.3
         #self.odom_frame = None
         self.odom = np.eye(4,4)
-        self.fov = np.radians(60.)
+        self.fov = np.radians(116.)
         self.num_samples = 20
         self.budget = 50.
         self.odom_id = 0
@@ -41,17 +41,20 @@ class TopoTree:
         self.goal_node = None
 
         # (x,y) bounds
-        self.bounds = [(-4.35, 5.7), (-5.0, 12.0)]
+        # self.bounds = [(-1.0, 9.), (-3., 3.25)]
+        self.bounds = [(-3.5, 11.5), (-6., 6)]
+
+        # height=7.0, width=11, center_coorinates=(4.0, 0.0),
 
         # Publishers
         self.marker_pub = rospy.Publisher('/high_level_planner', MarkerArray, queue_size=10)
         self.sim_ = rospy.get_param("~gs_sim", False)
         if self.sim_:  # for sim
-            self.odom_frame_id = rospy.get_param("~odom_frame_id", "odom")
-            self.world_frame_id = rospy.get_param("~world_frame_id", "world")
+            self.odom_frame_id = rospy.get_param("~odom_frame_id", "tof_1")
+            self.world_frame_id = rospy.get_param("~world_frame_id", "map")
         else:
-            self.odom_frame_id = rospy.get_param("~robot_odom_frame_id", "odom")
-            self.world_frame_id = rospy.get_param("~robot_world_frame_id", "world")
+            self.odom_frame_id = rospy.get_param("~robot_odom_frame_id", "tof_1")
+            self.world_frame_id = rospy.get_param("~robot_world_frame_id", "map")
         # TF
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -81,7 +84,7 @@ class TopoTree:
             transform.transform.rotation.z,
             transform.transform.rotation.w
         ]).as_euler("xyz")[2]
-        rospy.loginfo(f"Odom pos: {self.odom_pos}, Odom yaw: {self.odom_yaw}")
+        # rospy.loginfo(f"Odom pos: {self.odom_pos}, Odom yaw: {self.odom_yaw}")
         
         self.odom[0,3] = transform.transform.translation.x
         self.odom[1,3] = transform.transform.translation.y
@@ -153,7 +156,7 @@ class TopoTree:
     def point_callback(self, msg):
        pass
 
-    def spin(self, point, utility, cam2world, goal_tol=0.5, fail_pos_tol=0.1, fail_yaw_tol=0.1):
+    def spin(self, point, utility, goal_tol=0.5, fail_pos_tol=0.1, fail_yaw_tol=0.1):
         
         if self.lookup_odom() == -1:
             rospy.logerr("[Topo graph] Failed to lookup odom!")
@@ -195,7 +198,7 @@ class TopoTree:
         self.prune_old_frontier_candidates()
         self.zero_frontier_utilities()
         for i,p in enumerate(point):
-            p = cam2world[:3,:3] @ p + cam2world[:3,3]
+            # p = cam2world[:3,:3] @ p + cam2world[:3,3]
             self.add_frontier_candidate(p, utility[i])
         self.prune_frontiers()
         odom = self.odom_pos[:2]
@@ -256,6 +259,8 @@ class TopoTree:
         point_homogenous = np.ones(4)
         point_homogenous[:3] = point
         point_in_body = np.linalg.inv(self.odom) @ point_homogenous
+
+        print(f"point in body: {point_in_body}")
         
         d = np.linalg.norm(point_in_body[1:3])
         dist = d / np.tan(fov /2.)
@@ -365,6 +370,28 @@ class TopoTree:
         marker.action = Marker.DELETEALL
         marker_array_msg.markers.append(marker)
         self.marker_pub.publish(marker_array_msg)
+
+        #add map bounds
+        bounds_marker = Marker()
+        bounds_marker.header.frame_id = self.world_frame_id
+        bounds_marker.header.stamp = rospy.Time.now()
+        bounds_marker.ns = "bounds"
+        bounds_marker.id = -1
+        bounds_marker.type = Marker.LINE_STRIP
+        bounds_marker.action = Marker.ADD
+        bounds_marker.scale.x = 0.1
+        bounds_marker.color.a = 1.0
+        bounds_marker.color.r = 0.0
+        bounds_marker.color.g = 0.0
+        bounds_marker.color.b = 1.0
+
+        p1 = self.create_point((self.bounds[0][0], self.bounds[1][0]))
+        p2 = self.create_point((self.bounds[0][1], self.bounds[1][0]))
+        p3 = self.create_point((self.bounds[0][1], self.bounds[1][1]))
+        p4 = self.create_point((self.bounds[0][0], self.bounds[1][1]))
+        bounds_marker.points = [p1, p2, p3, p4, p1]
+        marker_array.markers.append(bounds_marker)
+
         # Add nodes as spheres
         for node, data in self.graph.nodes(data=True):
             try:
