@@ -41,7 +41,11 @@ class ExplorationGrid:
         self.uncertainties = uncertainties
         self.weights = weights
 
-        self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
+        self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True)
+        # self.cluster_centroids_not_filtered, self.average_gradient_magnitudes_not_filtered = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
+
+        # rospy.loginfo(f"centroid number         : {self.cluster_centroids_not_filtered.shape}\n")
+        # rospy.loginfo(f"filtered centroid number: {self.cluster_centroids.shape}")
 
 
     def get_gaussian_frontiers(self, means, uncertainties, cluster_size=0.1, nms_radius=1.5, filter_grad_mean=False):
