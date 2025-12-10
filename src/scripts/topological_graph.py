@@ -40,6 +40,10 @@ class TopoTree:
         self.prev_odom_yaw = None
         self.goal_node = None
 
+        self.exploration_gain = 1.0
+
+        self.latest_cost_benefit = {}
+
         # (x,y) bounds
         self.bounds = [(-0.8, 8.7), (-2.75, 2.9)] # hidden obstacle
         # self.bounds = [(-3.5, 11.25), (-6., 5.8)] # big empty arena
@@ -212,6 +216,9 @@ class TopoTree:
                 self.graph.nodes[n]['utility'] = 0.0
 
         d, u, p, c = self.dijkstra(start[0])
+
+        self.latest_cost_benefit = c
+        self.publish_cost_markers()
         
         max_utility_path = max(c, key=c.get)
         
@@ -250,7 +257,7 @@ class TopoTree:
                     utilities[neighbor] = utility
                     distances[neighbor] = distance
                     if distance > 0.:
-                        cost_benefit[neighbor] = utility / np.exp(distance)
+                        cost_benefit[neighbor] = utility / np.exp(distance * self.exploration_gain)
                     paths[neighbor] = paths[current_node] + [neighbor]
                     heapq.heappush(queue, (-utility, distance, neighbor))
         return distances, utilities, paths, cost_benefit
@@ -498,6 +505,62 @@ class TopoTree:
             except:
                 pass
 
+        self.marker_pub.publish(marker_array)
+
+    def publish_cost_markers(self):
+        """
+        Publishes text markers showing the cost_benefit score of each node.
+        """
+        if self.world_frame_id is None or not self.latest_cost_benefit:
+            return
+
+        marker_array = MarkerArray()
+        
+        # Delete old cost markers
+        marker = Marker()
+        marker.ns = 'cost_values'
+        marker.header.frame_id = self.world_frame_id
+        marker.id = 0
+        marker.action = Marker.DELETEALL
+        marker_array.markers.append(marker)
+
+        # Find max value for color normalization
+        max_val = max(self.latest_cost_benefit.values()) if self.latest_cost_benefit else 1.0
+        if max_val == 0: max_val = 1.0
+
+        for node, value in self.latest_cost_benefit.items():
+            if node not in self.graph.nodes:
+                continue
+            
+            # Skip showing 0.0 costs to reduce clutter
+            if value <= 0.001:
+                continue
+
+            pos = self.graph.nodes[node]['pos']
+            
+            marker = Marker()
+            marker.header.frame_id = self.world_frame_id
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "cost_values"
+            marker.id = node
+            marker.type = Marker.TEXT_VIEW_FACING
+            marker.action = Marker.ADD
+            marker.pose.position.x = pos[0]
+            marker.pose.position.y = pos[1]
+            marker.pose.position.z = 0.5  # Float 0.5m above the node
+            marker.pose.orientation.w = 1.0
+            marker.scale.z = 0.2  # Text height
+            
+            # Color Map: Red (Low) -> Green (High)
+            norm_val = value / max_val
+            marker.color.r = 1.0 - norm_val
+            marker.color.g = norm_val
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+            
+            marker.text = f"{value:.2f}"
+            marker_array.markers.append(marker)
+            
         self.marker_pub.publish(marker_array)
 
     def create_point(self, pos):
