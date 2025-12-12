@@ -40,56 +40,88 @@ class SOGMMExplorationNode:
 
         self.grid_sub = rospy.Subscriber("/starling1/mpa/grid", Grid, self.grid_callback)
 
+        self.mavros_pose_sub = rospy.Subscriber(
+            "/starling1/mavros/local_position/pose", PoseStamped, self.mavros_pose_callback, queue_size=1
+        )
+
         self.viewpoint_marker_pub = rospy.Publisher("viewpoint_marker", Marker, queue_size=1)
         self.path_marker_pub = rospy.Publisher("path_marker", Marker, queue_size=1)
 
         self.viewpoint_list = [Point(0.0, -1.0, 1.0), Point(3.0, -1.0, 1.0), Point(3.0, 2.0, 1.0), Point(0.0, 2.0, 1.0)]
         self.last_id = 0
 
+        self.goal_waypoint_id = 4
+        # self.goal_waypoint_id = 0
+
         self.ftr_goal_tol_ = rospy.get_param('~ftr_goal_tol', 1.0)
         self.fail_pos_tol_ = rospy.get_param('~fail_pos_tol', 0.1)
         self.fail_yaw_tol_ = rospy.get_param('~fail_yaw_tol', 0.1)
 
+        self.path_to_ftr = None
+
     def execute_exploration(self):
 
-        if self.reached_target:
-            if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr):
-                # Get the next viewpoint from the path
-                next_waypoint = self.path_to_ftr[self.current_waypoint_index]
-                self.viewpoint = Point()
-                self.viewpoint.x = next_waypoint[0]
-                self.viewpoint.y = next_waypoint[1]
-                self.viewpoint.z = 1.0  # Assuming a fixed height
+        if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr):
 
-                rospy.loginfo(f"Sending waypoint {self.current_waypoint_index + 1}/{len(self.path_to_ftr)}: {self.viewpoint}")
+            if not hasattr(self, 'robot_position'):
+                rospy.logwarn_throttle(1.0, "Waiting for robot position...")
+                return
 
-                self.viewpoint_marker_pub.publish(self.create_viewpoint_marker(self.viewpoint))
+            # Select the nth next goal on the path
+            target_index = min(self.current_waypoint_index + self.goal_waypoint_id, len(self.path_to_ftr) - 1)
+            
+            next_waypoint = self.path_to_ftr[target_index]
+            
+            rospy.loginfo(f"robot current position: {self.robot_position}")
+            dx = next_waypoint[0] - self.robot_position.x
+            dy = next_waypoint[1] - self.robot_position.y
+            distance_to_goal = np.sqrt(dx**2 + dy**2)
 
-                # Pass the extracted Point object to the fly service
+            # If the selected goal is too close, try to find the next one that is far enough
+            while distance_to_goal <= 0.1:
+                target_index += 1
+                if target_index >= len(self.path_to_ftr):
+                    rospy.loginfo("Completed path.")
+                    self.path_to_ftr = None # Clear path after completion
+                    return
+                
+                next_waypoint = self.path_to_ftr[target_index]
+                dx = next_waypoint[0] - self.robot_position.x
+                dy = next_waypoint[1] - self.robot_position.y
+                distance_to_goal = np.sqrt(dx**2 + dy**2)
+
+            self.viewpoint = Point()
+            self.viewpoint.x = next_waypoint[0]
+            self.viewpoint.y = next_waypoint[1]
+            self.viewpoint.z = 1.0  # Assuming a fixed height
+
+            rospy.loginfo(f"Sending waypoint {target_index + 1}/{len(self.path_to_ftr)}: {self.viewpoint}")
+
+            self.viewpoint_marker_pub.publish(self.create_viewpoint_marker(self.viewpoint))
+
+
+            # Pass the extracted Point object to the fly service
+            try:
                 response = self.fly_trajectory_client(self.viewpoint, False)
                 self.reached_target = response.success
+                rospy.loginfo(f"Reached target (success): {self.reached_target}")
+            except rospy.ServiceException as e:
+                rospy.logerr(f"Service call failed: {e}")
+                self.reached_target = False
 
-                if self.reached_target:
-                    self.current_waypoint_index += 1
+            if self.reached_target:
+                self.current_waypoint_index = target_index + 1
                 
                 if self.current_waypoint_index >= len(self.path_to_ftr):
                     rospy.loginfo("Completed path.")
                     self.path_to_ftr = None # Clear path after completion
             else:
-                rospy.loginfo("No active path to follow. Waiting for new path.")
-                # Optionally, you can add logic here to request a new plan if idle.
-                rospy.sleep(1.0) # Wait before checking again
-
+                rospy.logwarn("Trajectory service failed. Aborting current path to sample new goal.")
+                self.path_to_ftr = None # Abort path to force replanning
         else:
-            # Retry the previously stored viewpoint
-            if hasattr(self, 'viewpoint'):
-                rospy.loginfo("Retrying previous viewpoint...")
-                self.viewpoint_marker_pub.publish(self.create_viewpoint_marker(self.viewpoint))
-                response = self.fly_trajectory_client(self.viewpoint, False)
-                self.reached_target = response.success
-            else:
-                # Fallback if no viewpoint is stored
-                self.reached_target = True
+            rospy.loginfo("No active path to follow. Waiting for new path.")
+            # Optionally, you can add logic here to request a new plan if idle.
+            rospy.sleep(1.0) # Wait before checking again
     
     def grid_callback(self, msg):
         means = msg.means.data
@@ -97,18 +129,33 @@ class SOGMMExplorationNode:
 
         means = np.array(means).reshape((-1,3))
 
-        path = self.topo_tree.spin(means, uncertainties, self.ftr_goal_tol_, self.fail_pos_tol_, self.fail_yaw_tol_)
+        rospy.logdebug(f"received grid means number: {means.shape[0]}")
 
+        if len(uncertainties) > 0:
+            path = self.topo_tree.spin(means, uncertainties, self.ftr_goal_tol_, self.fail_pos_tol_, self.fail_yaw_tol_)
+        else:
+            rospy.logerr("empty grid input. path wont be generated")
+            return
+        
         if path is None:
             rospy.logerr("No path to frontier found")
         else:
             # New path received, reset and store it
+            rospy.logdebug("New path received, reset and store it")
             self.path_to_ftr = path
             self.current_waypoint_index = 0
             self.reached_target = True # Trigger execution of the new path
-            print("path to ftr: ", self.path_to_ftr)
+            rospy.logdebug(f"path to ftr: {self.path_to_ftr}")
             path_marker = self.create_path_marker(self.path_to_ftr)
             self.path_marker_pub.publish(path_marker)
+
+    def mavros_pose_callback(self, msg):
+        """
+        Callback for PoseStamped messages - process directly without threading
+        """
+        # rospy.logdebug("Received pose message from MAVROS")
+
+        self.robot_position = msg.pose.position
 
     @staticmethod
     def create_viewpoint_marker(viewpoint):
@@ -157,7 +204,7 @@ class SOGMMExplorationNode:
         marker.scale.x = 0.1
 
         # Set Color
-        marker.color.r = 1.0
+        marker.color.r = 0.0
         marker.color.g = 1.0
         marker.color.b = 0.
         marker.color.a = 1.0
