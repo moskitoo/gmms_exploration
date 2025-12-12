@@ -91,7 +91,8 @@ class SOGMMExplorationNode:
             rospy.loginfo(f"robot current position: {self.robot_position}")
             dx = next_waypoint[0] - self.robot_position.x
             dy = next_waypoint[1] - self.robot_position.y
-            distance_to_goal = np.sqrt(dx**2 + dy**2)
+            dz = next_waypoint[2] - self.robot_position.z
+            distance_to_goal = np.sqrt(dx**2 + dy**2 + dz**2)
 
             # If the selected goal is too close, try to find the next one that is far enough
             while distance_to_goal <= 0.1:
@@ -104,12 +105,13 @@ class SOGMMExplorationNode:
                 next_waypoint = self.path_to_ftr[target_index]
                 dx = next_waypoint[0] - self.robot_position.x
                 dy = next_waypoint[1] - self.robot_position.y
-                distance_to_goal = np.sqrt(dx**2 + dy**2)
+                dz = next_waypoint[2] - self.robot_position.z
+                distance_to_goal = np.sqrt(dx**2 + dy**2 + dz**2)
 
             self.viewpoint = Point()
             self.viewpoint.x = next_waypoint[0]
             self.viewpoint.y = next_waypoint[1]
-            self.viewpoint.z = 1.0  # Assuming a fixed height
+            self.viewpoint.z = next_waypoint[2]
 
             rospy.loginfo(f"Sending waypoint {target_index + 1}/{len(self.path_to_ftr)}: {self.viewpoint}")
 
@@ -230,7 +232,7 @@ class SOGMMExplorationNode:
             p = Point()
             p.x = point[0]
             p.y = point[1]
-            p.z = 1.0  # Assuming a fixed height for visualization
+            p.z = point[2]
             marker.points.append(p)
 
         return marker
