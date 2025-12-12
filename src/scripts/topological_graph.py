@@ -41,14 +41,14 @@ class TopoTree:
         self.goal_node = None
 
         # self.exploration_distance_gain = 0.2
-        self.exploration_distance_gain = 0.2
+        self.exploration_distance_gain = 0.1
 
         self.latest_cost_benefit = {}
 
         # (x,y) bounds
-        self.bounds = [(-0.8, 8.7, 0.0), (-2.75, 2.9, 0.0)] # hidden obstacle
+        # self.bounds = [(-0.8, 8.7, 0.0), (-2.75, 2.9, 0.0)] # hidden obstacle
         # self.bounds = [(-3.5, 11.25), (-6., 5.8)] # big empty arena
-        # self.bounds = [(-0.65, 9.0), (-1., 4.5)] # custom arena (cluttered)
+        self.bounds = [(-0.65, 9.0, 0.0), (-1., 4.5, 0.0)] # custom arena (cluttered)
 
         # height=7.0, width=11, center_coorinates=(4.0, 0.0),
 
