@@ -61,6 +61,22 @@ class SOGMMExplorationNode:
 
     def execute_exploration(self):
 
+        # # Dynamic adjustment of goal_waypoint_id based on graph size
+        # if hasattr(self.topo_tree, 'graph'):
+        #     try:
+        #         # Count odometry nodes (predicted=False)
+        #         num_odom_nodes = sum(1 for _, data in self.topo_tree.graph.nodes(data=True) if not data.get('predicted', True))
+                
+        #         # Increase lookahead as graph grows
+        #         # Base: 6, +1 per n nodes, max 30
+        #         n_nodes = 5
+        #         self.goal_waypoint_id = 6 + int(num_odom_nodes / n_nodes)
+        #         self.goal_waypoint_id = min(self.goal_waypoint_id, 30)
+        #         rospy.logdebug_throttle(n_nodes, f"-----> Odom nodes: {num_odom_nodes}, goal_waypoint_id: {self.goal_waypoint_id}")
+        #     except RuntimeError:
+        #         # Graph changed during iteration, skip update this time
+        #         pass
+
         if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr):
 
             if not hasattr(self, 'robot_position'):
@@ -145,7 +161,7 @@ class SOGMMExplorationNode:
             self.path_to_ftr = path
             self.current_waypoint_index = 0
             self.reached_target = True # Trigger execution of the new path
-            rospy.logdebug(f"path to ftr: {self.path_to_ftr}")
+            # rospy.logdebug(f"path to ftr: {self.path_to_ftr}")
             path_marker = self.create_path_marker(self.path_to_ftr)
             self.path_marker_pub.publish(path_marker)
 
