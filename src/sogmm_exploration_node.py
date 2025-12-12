@@ -50,7 +50,7 @@ class SOGMMExplorationNode:
         self.viewpoint_list = [Point(0.0, -1.0, 1.0), Point(3.0, -1.0, 1.0), Point(3.0, 2.0, 1.0), Point(0.0, 2.0, 1.0)]
         self.last_id = 0
 
-        self.goal_waypoint_id = 4
+        self.goal_waypoint_id = 6
         # self.goal_waypoint_id = 0
 
         self.ftr_goal_tol_ = rospy.get_param('~ftr_goal_tol', 1.0)
@@ -77,7 +77,7 @@ class SOGMMExplorationNode:
         #         # Graph changed during iteration, skip update this time
         #         pass
 
-        if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr):
+        if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr) and  self.current_waypoint_index >= 0:
 
             if not hasattr(self, 'robot_position'):
                 rospy.logwarn_throttle(1.0, "Waiting for robot position...")
@@ -134,8 +134,9 @@ class SOGMMExplorationNode:
                     rospy.loginfo("Completed path.")
                     self.path_to_ftr = None # Clear path after completion
             else:
-                rospy.logwarn("Trajectory service failed. Aborting current path to sample new goal.")
-                self.path_to_ftr = None # Abort path to force replanning
+                rospy.logwarn("Trajectory service failed. Trying closer waypoint.")
+                # self.path_to_ftr = None
+                self.current_waypoint_index = target_index - 1
         else:
             rospy.loginfo("No active path to follow. Waiting for new path.")
             # Optionally, you can add logic here to request a new plan if idle.
