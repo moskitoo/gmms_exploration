@@ -41,11 +41,11 @@ class ExplorationGrid:
         self.uncertainties = uncertainties
         self.weights = weights
 
-        self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True)
+        self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
         # self.cluster_centroids_not_filtered, self.average_gradient_magnitudes_not_filtered = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
 
-        # rospy.loginfo(f"centroid number         : {self.cluster_centroids_not_filtered.shape}\n")
-        # rospy.loginfo(f"filtered centroid number: {self.cluster_centroids.shape}")
+        # rospy.logdebug(f"centroid number         : {self.cluster_centroids_not_filtered.shape}\n")
+        rospy.logdebug(f"centroids shape: {self.cluster_centroids.shape}")
 
 
     def get_gaussian_frontiers(self, means, uncertainties, cluster_size=0.1, nms_radius=1.5, filter_grad_mean=False):
@@ -57,10 +57,15 @@ class ExplorationGrid:
         cluster_indices = np.floor(means * inverse_cluster_size).astype(int)
         unique_cluster_indices, inverse_indices = np.unique(cluster_indices, axis=0, return_inverse=True)
 
+        # rospy.logdebug(f"cluster_indices: {cluster_indices}")
+        rospy.logdebug(f"unique_cluster_indices: {unique_cluster_indices}")
+
         num_unique = len(unique_cluster_indices)
         sum_means = np.zeros((num_unique, 3))
         sum_grads = np.zeros((num_unique, 1))
         counts = np.zeros(num_unique, dtype=int)
+
+        rospy.logdebug(f"num_unique: {num_unique}")
 
         # compute means for each cluster
         np.add.at(sum_means, inverse_indices, means)
@@ -75,6 +80,9 @@ class ExplorationGrid:
         
         mean_positions = sum_means / counts[:, np.newaxis]
         mean_grads = sum_grads / counts[:, np.newaxis]
+
+        rospy.logdebug(f"mean_positions: {mean_positions}")
+        rospy.logdebug(f"mean_grads: {mean_grads}")
 
         # only keep centroids above grad mean
         if filter_grad_mean:
@@ -311,6 +319,8 @@ class SOGMMGridNode:
         gmm = msg.components
         n_components = len(gmm)
 
+        rospy.logdebug(f"received gaussians: {n_components}")
+
         if n_components > 0:
             means = np.empty([n_components, 3])
             covs = np.empty([n_components, 9])
@@ -323,30 +333,9 @@ class SOGMMGridNode:
                 uct[i] = gmm[i].uncertainty
                 weights[i] = gmm[i].weight
 
-            # rospy.logdebug(f"means shape: {means.shape}")
-            # rospy.logdebug(f"covs shape: {covs.shape}")
-            # rospy.logdebug(f"unct shape: {uct.shape}")
-
-            max_uct_id = np.argmax(uct)
-
-            # rospy.logdebug(f"max_uct_id: {max_uct_id}")
-            uct_msg = Int32()
-            uct_msg.data = max_uct_id
-            self.uct_id_pub.publish(uct_msg)
-
-            # rospy.logdebug(f"max_uct_id mean: {gmm[max_uct_id].mean}")
-            # rospy.logdebug(f"max_uct_id covariance: {gmm[max_uct_id].covariance}")
-            # rospy.logdebug(f"max_uct_id uncertainty: {gmm[max_uct_id].uncertainty}")
-
-            # rospy.logdebug(f"max_uct_id fusion count: {gmm[max_uct_id].fusion_count}")
-            # rospy.logdebug(
-            #     f"max_uct_id observation_count: {gmm[max_uct_id].observation_count}"
-            # )
-            # rospy.logdebug(
-            #     f"max_uct_id last_displacement: {gmm[max_uct_id].last_displacement}"
-            # )
-
-            # rospy.logdebug(f"grid: \n{self.exploration_grid.grid}")
+            rospy.logdebug(f"means shape: {means.shape}")
+            rospy.logdebug(f"covs shape: {covs.shape}")
+            rospy.logdebug(f"unct shape: {uct.shape}")
 
             self.exploration_grid.update_grid(means, covs, uct, weights)
 
