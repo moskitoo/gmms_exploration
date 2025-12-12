@@ -40,13 +40,15 @@ class TopoTree:
         self.prev_odom_yaw = None
         self.goal_node = None
 
-        self.exploration_gain = 1.0
+        # self.exploration_distance_gain = 0.2
+        self.exploration_distance_gain = 0.2
 
         self.latest_cost_benefit = {}
 
         # (x,y) bounds
-        self.bounds = [(-0.8, 8.7), (-2.75, 2.9)] # hidden obstacle
+        # self.bounds = [(-0.8, 8.7), (-2.75, 2.9)] # hidden obstacle
         # self.bounds = [(-3.5, 11.25), (-6., 5.8)] # big empty arena
+        self.bounds = [(-0.65, 9.0), (-1., 4.5)] # custom arena (cluttered)
 
         # height=7.0, width=11, center_coorinates=(4.0, 0.0),
 
@@ -217,8 +219,8 @@ class TopoTree:
 
         d, u, p, c = self.dijkstra(start[0])
 
-        self.latest_cost_benefit = c
-        self.publish_cost_markers()
+        self.latest_cost_benefit = d, u, c
+        # self.publish_cost_markers()
         
         max_utility_path = max(c, key=c.get)
         
@@ -257,7 +259,7 @@ class TopoTree:
                     utilities[neighbor] = utility
                     distances[neighbor] = distance
                     if distance > 0.:
-                        cost_benefit[neighbor] = utility / np.exp(distance * self.exploration_gain)
+                        cost_benefit[neighbor] = utility / np.exp(distance * self.exploration_distance_gain)
                     paths[neighbor] = paths[current_node] + [neighbor]
                     heapq.heappush(queue, (-utility, distance, neighbor))
         return distances, utilities, paths, cost_benefit
@@ -301,7 +303,11 @@ class TopoTree:
     def zero_frontier_utilities(self):
         for node, data in self.graph.nodes(data=True):
             if data['predicted']:
-                data['utility'] = 0.
+                # data['utility'] = 0.
+                dist = np.linalg.norm(np.array(data['pos']) - self.odom_pos[:2])
+                
+                if dist < 4.0:
+                    data['utility'] = 0.
 
 
     def print_graph(self):
@@ -524,17 +530,23 @@ class TopoTree:
         marker.action = Marker.DELETEALL
         marker_array.markers.append(marker)
 
+        distances, utilities, cost_benefits = self.latest_cost_benefit
+
         # Find max value for color normalization
-        max_val = max(self.latest_cost_benefit.values()) if self.latest_cost_benefit else 1.0
+        max_val = max(cost_benefits.values()) if cost_benefits else 1.0
         if max_val == 0: max_val = 1.0
 
-        for node, value in self.latest_cost_benefit.items():
+        for node in cost_benefits:
             if node not in self.graph.nodes:
                 continue
             
+            distance = distances.get(node, 0.0)
+            uncertainty = utilities.get(node, 0.0)
+            cost_benefit = cost_benefits.get(node, 0.0)
+            
             # Skip showing 0.0 costs to reduce clutter
-            if value <= 0.001:
-                continue
+            # if value <= 0.001:
+            #     continue
 
             pos = self.graph.nodes[node]['pos']
             
@@ -552,13 +564,13 @@ class TopoTree:
             marker.scale.z = 0.2  # Text height
             
             # Color Map: Red (Low) -> Green (High)
-            norm_val = value / max_val
+            norm_val = cost_benefit / max_val
             marker.color.r = 1.0 - norm_val
             marker.color.g = norm_val
             marker.color.b = 0.0
             marker.color.a = 1.0
             
-            marker.text = f"{value:.2f}"
+            marker.text = f"CB: {cost_benefit:.3f} \n D: {distance:.3f} \n U: {uncertainty:.3f}"
             marker_array.markers.append(marker)
             
         self.marker_pub.publish(marker_array)
