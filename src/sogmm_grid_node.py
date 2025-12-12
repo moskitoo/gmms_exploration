@@ -58,7 +58,7 @@ class ExplorationGrid:
         unique_cluster_indices, inverse_indices = np.unique(cluster_indices, axis=0, return_inverse=True)
 
         # rospy.logdebug(f"cluster_indices: {cluster_indices}")
-        rospy.logdebug(f"unique_cluster_indices: {unique_cluster_indices}")
+        # rospy.logdebug(f"unique_cluster_indices: {unique_cluster_indices}")
 
         num_unique = len(unique_cluster_indices)
         sum_means = np.zeros((num_unique, 3))
@@ -81,8 +81,8 @@ class ExplorationGrid:
         mean_positions = sum_means / counts[:, np.newaxis]
         mean_grads = sum_grads / counts[:, np.newaxis]
 
-        rospy.logdebug(f"mean_positions: {mean_positions}")
-        rospy.logdebug(f"mean_grads: {mean_grads}")
+        # rospy.logdebug(f"mean_positions: {mean_positions}")
+        # rospy.logdebug(f"mean_grads: {mean_grads}")
 
         # only keep centroids above grad mean
         if filter_grad_mean:
@@ -260,7 +260,10 @@ class ExplorationGrid:
     def compose_grid_msg(self):
         msg = Grid()
 
-        msg.means.data = self.cluster_centroids.flatten()
+        centroids_for_msg = self.cluster_centroids.copy()
+        centroids_for_msg[:, 2] += self.grid_cell_size / 2 
+
+        msg.means.data = centroids_for_msg.flatten()
         msg.uncertainties.data = self.average_gradient_magnitudes
 
         return msg
@@ -282,7 +285,7 @@ class SOGMMGridNode:
         self.gmm_topic = rospy.get_param("~gmm_topic", "/starling1/mpa/gmm")
 
         self.exploration_grid = ExplorationGrid(
-            grid_cell_size=2.0
+            grid_cell_size=1.0
         )
 
         # Subscribers
