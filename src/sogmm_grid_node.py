@@ -27,6 +27,7 @@ class ExplorationGrid:
         static_cluster_center: bool = False,
         map_bounds: List[Tuple] = [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)],
         unexplored_uncertainty: float = 1.0,
+        grid_offset = 0.5
     ):
         self.grid_cell_size = grid_cell_size
 
@@ -38,11 +39,11 @@ class ExplorationGrid:
         self.static_cluster_center = static_cluster_center
         self.unexplored_uncertainty = unexplored_uncertainty
         
-        # FIX: Convert tuples to lists and expand bounds properly
+        self.map_bounds = map_bounds
         self.map_bounds = [
-            [map_bounds[0][0] - grid_cell_size, map_bounds[0][1] + grid_cell_size],
-            [map_bounds[1][0] - grid_cell_size, map_bounds[1][1] + grid_cell_size],
-            [map_bounds[2][0] - grid_cell_size, map_bounds[2][1] + grid_cell_size]
+            [map_bounds[0][0] - grid_offset, map_bounds[0][1] + grid_offset],
+            [map_bounds[1][0] - grid_offset, map_bounds[1][1] + grid_offset],
+            [map_bounds[2][0] - grid_offset, map_bounds[2][1] + grid_offset]
         ]
 
         if self.static_cluster_center:
