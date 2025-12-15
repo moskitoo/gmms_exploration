@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-    Author: Varun Murali
-    topological graph
+Author: Varun Murali
+topological graph
 """
 
 import rospy
@@ -19,6 +19,7 @@ import heapq
 import copy
 import tf2_ros
 
+
 class TopoTree:
     def __init__(self):
         # Initialize graph
@@ -28,11 +29,11 @@ class TopoTree:
         self.previous_position = None
         self.distance_threshold = 0.5  # meters
         self.odom_threshold = 0.3
-        #self.odom_frame = None
-        self.odom = np.eye(4,4)
-        self.fov = np.radians(116.)
+        # self.odom_frame = None
+        self.odom = np.eye(4, 4)
+        self.fov = np.radians(116.0)
         self.num_samples = 20
-        self.budget = 50.
+        self.budget = 50.0
         self.odom_id = 0
         self.graph_node_id = 0
         self.path = None
@@ -45,15 +46,15 @@ class TopoTree:
 
         self.latest_cost_benefit = {}
 
-        # (x,y) bounds
-        # self.bounds = [(-0.8, 8.7, 0.0), (-2.75, 2.9, 0.0)] # hidden obstacle
-        # self.bounds = [(-3.5, 11.25), (-6., 5.8)] # big empty arena
-        self.bounds = [(-0.65, 9.0, 0.0), (-1., 4.5, 0.0)] # custom arena (cluttered)
+
+        self.bounds = rospy.get_param("map_bounds", [(-0.65, 9.0, 0.0), (-1.0, 4.5, 0.0)])
 
         # height=7.0, width=11, center_coorinates=(4.0, 0.0),
 
         # Publishers
-        self.marker_pub = rospy.Publisher('/high_level_planner', MarkerArray, queue_size=10)
+        self.marker_pub = rospy.Publisher(
+            "/high_level_planner", MarkerArray, queue_size=10
+        )
         self.sim_ = rospy.get_param("~gs_sim", False)
         if self.sim_:  # for sim
             self.odom_frame_id = rospy.get_param("~odom_frame_id", "tof_1")
@@ -65,14 +66,16 @@ class TopoTree:
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         rospy.loginfo("High Level Planner Node Started")
-    
+
     def lookup_odom(self):
         # Lookup transform
         try:
             # Lookup the static transform
             source_frame = self.world_frame_id
             target_frame = self.odom_frame_id
-            transform = self.tf_buffer.lookup_transform(source_frame, target_frame, rospy.Time(0))
+            transform = self.tf_buffer.lookup_transform(
+                source_frame, target_frame, rospy.Time(0)
+            )
 
         except tf2_ros.LookupException as e:
             rospy.logerr(f"Transform lookup failed: {e}")
@@ -83,48 +86,99 @@ class TopoTree:
         except tf2_ros.ExtrapolationException as e:
             rospy.logerr(f"Transform extrapolation issue: {e}")
             return -1
-        self.odom_pos = np.array([transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z])
-        self.odom_yaw = R.from_quat([
-            transform.transform.rotation.x,
-            transform.transform.rotation.y,
-            transform.transform.rotation.z,
-            transform.transform.rotation.w
-        ]).as_euler("xyz")[2]
+        self.odom_pos = np.array(
+            [
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z,
+            ]
+        )
+        self.odom_yaw = R.from_quat(
+            [
+                transform.transform.rotation.x,
+                transform.transform.rotation.y,
+                transform.transform.rotation.z,
+                transform.transform.rotation.w,
+            ]
+        ).as_euler("xyz")[2]
         # rospy.loginfo(f"Odom pos: {self.odom_pos}, Odom yaw: {self.odom_yaw}")
-        
-        self.odom[0,3] = transform.transform.translation.x
-        self.odom[1,3] = transform.transform.translation.y
-        self.odom[2,3] = transform.transform.translation.z
-        self.odom[:3,:3] = R.from_quat([transform.transform.rotation.x, 
-                                              transform.transform.rotation.y, 
-                                              transform.transform.rotation.z, 
-                                              transform.transform.rotation.w]).as_matrix()
-        
+
+        self.odom[0, 3] = transform.transform.translation.x
+        self.odom[1, 3] = transform.transform.translation.y
+        self.odom[2, 3] = transform.transform.translation.z
+        self.odom[:3, :3] = R.from_quat(
+            [
+                transform.transform.rotation.x,
+                transform.transform.rotation.y,
+                transform.transform.rotation.z,
+                transform.transform.rotation.w,
+            ]
+        ).as_matrix()
+
         # Create a unique ID for this position
         self.node_id += 1
         current_node_id = self.node_id
         if self.previous_position is not None:
-            distance = math.sqrt((transform.transform.translation.x - self.previous_position[0])**2 +
-                                 (transform.transform.translation.y - self.previous_position[1])**2 +
-                                 (transform.transform.translation.z - self.previous_position[2])**2)
-            if distance >= self.distance_threshold or distance == 0.:
+            distance = math.sqrt(
+                (transform.transform.translation.x - self.previous_position[0]) ** 2
+                + (transform.transform.translation.y - self.previous_position[1]) ** 2
+                + (transform.transform.translation.z - self.previous_position[2]) ** 2
+            )
+            if distance >= self.distance_threshold or distance == 0.0:
                 # Add edge between previous node and current node if threshold is met
-                pos_np = np.array([transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z])
-                distances = [(n, np.linalg.norm(pos_np - np.array(d['pos']))) for (n,d) in self.graph.nodes(data=True) if d['predicted'] == False]
+                pos_np = np.array(
+                    [
+                        transform.transform.translation.x,
+                        transform.transform.translation.y,
+                        transform.transform.translation.z,
+                    ]
+                )
+                distances = [
+                    (n, np.linalg.norm(pos_np - np.array(d["pos"])))
+                    for (n, d) in self.graph.nodes(data=True)
+                    if d["predicted"] == False
+                ]
                 _min = min(distances, key=lambda x: x[1])
                 if _min[1] > self.odom_threshold:
-                    self.graph.add_node(current_node_id, pos=(transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z), predicted=False, utility=0., frontier=False)
+                    self.graph.add_node(
+                        current_node_id,
+                        pos=(
+                            transform.transform.translation.x,
+                            transform.transform.translation.y,
+                            transform.transform.translation.z,
+                        ),
+                        predicted=False,
+                        utility=0.0,
+                        frontier=False,
+                    )
                     self.graph.add_edge(_min[0], self.node_id)
-                    self.previous_position = (transform.transform.translation.x, transform.transform.translation.y,  transform.transform.translation.z)
+                    self.previous_position = (
+                        transform.transform.translation.x,
+                        transform.transform.translation.y,
+                        transform.transform.translation.z,
+                    )
                     self.odom_id = current_node_id
 
         else:
-            self.graph.add_node(current_node_id, pos=(transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z), predicted=False, utility=0., frontier=False)
-            self.previous_position = (transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z)
-        
+            self.graph.add_node(
+                current_node_id,
+                pos=(
+                    transform.transform.translation.x,
+                    transform.transform.translation.y,
+                    transform.transform.translation.z,
+                ),
+                predicted=False,
+                utility=0.0,
+                frontier=False,
+            )
+            self.previous_position = (
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z,
+            )
+
         # Publish the graph as markers
         self.publish_graph_markers()
-
 
     def odom_callback(self, msg):
         pass
@@ -132,40 +186,52 @@ class TopoTree:
         position = msg.pose.pose.position
         orientation = msg.pose.pose.orientation
         self.odom_frame = msg.header.frame_id
-        self.odom[0,3] = position.x
-        self.odom[1,3] = position.y
-        self.odom[2,3] = position.z
-        self.odom[:3,:3] = R.from_quat([orientation.x, 
-                                        orientation.y, 
-                                        orientation.z, 
-                                        orientation.w]).as_matrix()
-        
+        self.odom[0, 3] = position.x
+        self.odom[1, 3] = position.y
+        self.odom[2, 3] = position.z
+        self.odom[:3, :3] = R.from_quat(
+            [orientation.x, orientation.y, orientation.z, orientation.w]
+        ).as_matrix()
+
         # Create a unique ID for this position
         current_node_id = self.node_id
         if self.previous_position is not None:
-            distance = math.sqrt((position.x - self.previous_position[0])**2 +
-                                 (position.y - self.previous_position[1])**2 +
-                                 (position.z - self.previous_position[2])**2)
-            if distance >= self.distance_threshold or distance == 0.:
+            distance = math.sqrt(
+                (position.x - self.previous_position[0]) ** 2
+                + (position.y - self.previous_position[1]) ** 2
+                + (position.z - self.previous_position[2]) ** 2
+            )
+            if distance >= self.distance_threshold or distance == 0.0:
                 # Add edge between previous node and current node if threshold is met
-                self.graph.add_node(current_node_id, pos=(position.x, position.y, position.z), predicted=False, utility=0., frontier=False)
+                self.graph.add_node(
+                    current_node_id,
+                    pos=(position.x, position.y, position.z),
+                    predicted=False,
+                    utility=0.0,
+                    frontier=False,
+                )
                 self.graph.add_edge(self.odom_id, self.node_id)
                 self.previous_position = (position.x, position.y, position.z)
                 self.odom_id = current_node_id
                 self.node_id += 1
         else:
-            self.graph.add_node(current_node_id, pos=(position.x, position.y, position.z), predicted=False, utility=0., frontier=False)
+            self.graph.add_node(
+                current_node_id,
+                pos=(position.x, position.y, position.z),
+                predicted=False,
+                utility=0.0,
+                frontier=False,
+            )
             self.previous_position = (position.x, position.y, position.z)
             self.node_id += 1
-        
+
         # Publish the graph as markers
         self.publish_graph_markers()
-    
+
     def point_callback(self, msg):
-       pass
+        pass
 
     def spin(self, point, utility, goal_tol=0.5, fail_pos_tol=0.1, fail_yaw_tol=0.1):
-        
         if self.lookup_odom() == -1:
             rospy.logerr("[Topo graph] Failed to lookup odom!")
             if self.path is not None:
@@ -176,7 +242,7 @@ class TopoTree:
         if self.path is not None:
             ## Check if close to odom and replan or not
             odom_np = self.odom_pos[:3]
-            path_np = self.path[-1,:]
+            path_np = self.path[-1, :]
 
             if np.linalg.norm(odom_np - path_np) >= goal_tol:
                 # The robot is far from goal, let's check if it is moving
@@ -185,59 +251,70 @@ class TopoTree:
                     prev_pos = self.prev_odom_pos[:3]
                     curr_pos = odom_np
 
-                    if np.linalg.norm(prev_pos - curr_pos) >= fail_pos_tol or \
-                        np.abs(self.odom_yaw - self.prev_odom_yaw) >= fail_yaw_tol:
-                        self.prev_odom_pos  = self.odom_pos
+                    if (
+                        np.linalg.norm(prev_pos - curr_pos) >= fail_pos_tol
+                        or np.abs(self.odom_yaw - self.prev_odom_yaw) >= fail_yaw_tol
+                    ):
+                        self.prev_odom_pos = self.odom_pos
                         self.prev_odom_yaw = self.odom_yaw
                         return self.path
                 # return self.path
 
         if self.goal_node is not None:
             try:
-                self.graph.nodes[self.goal_node]['utility'] = 0.
+                self.graph.nodes[self.goal_node]["utility"] = 0.0
             except:
                 pass
-        self.prev_odom_pos  = self.odom_pos
+        self.prev_odom_pos = self.odom_pos
         self.prev_odom_yaw = self.odom_yaw
         # Ensure positivity
         min_utility = np.min(utility)
-        if min_utility < 0.:
+        if min_utility < 0.0:
             utility += min_utility
         self.prune_old_frontier_candidates()
         self.zero_frontier_utilities()
-        for i,p in enumerate(point):
+        for i, p in enumerate(point):
             # p = cam2world[:3,:3] @ p + cam2world[:3,3]
             self.add_frontier_candidate(p, utility[i])
         self.prune_frontiers()
         odom = self.odom_pos[:3]
-        dists = [ (node, np.linalg.norm( (odom) - np.array(data['pos']))) for node, data in self.graph.nodes(data=True) if data["frontier"]==False and data["predicted"] == False] 
+        dists = [
+            (node, np.linalg.norm((odom) - np.array(data["pos"])))
+            for node, data in self.graph.nodes(data=True)
+            if data["frontier"] == False and data["predicted"] == False
+        ]
 
-        start = min(dists, key= lambda x: x[1])
-        odom_dists = [ (node, np.linalg.norm( (odom) - np.array(data['pos']))) for node, data in self.graph.nodes(data=True) if data["frontier"]==False and data["predicted"] == True] 
-        
-        for (n,d) in odom_dists:
+        start = min(dists, key=lambda x: x[1])
+        odom_dists = [
+            (node, np.linalg.norm((odom) - np.array(data["pos"])))
+            for node, data in self.graph.nodes(data=True)
+            if data["frontier"] == False and data["predicted"] == True
+        ]
+
+        for n, d in odom_dists:
             if d <= 1.1 * goal_tol:
-                self.graph.nodes[n]['utility'] = 0.0
+                self.graph.nodes[n]["utility"] = 0.0
 
         d, u, p, c = self.dijkstra(start[0])
 
         self.latest_cost_benefit = d, u, c
         # self.publish_cost_markers()
-        
+
         max_utility_path = max(c, key=c.get)
-        
-        self.path = np.zeros((len(p[max_utility_path]),3))
+
+        self.path = np.zeros((len(p[max_utility_path]), 3))
         self.goal_node = p[max_utility_path][-1]
-        for i,x in enumerate(p[max_utility_path]):
-            self.path[i,0] = self.graph.nodes[x]['pos'][0]
-            self.path[i,1] = self.graph.nodes[x]['pos'][1]
-            self.path[i,2] = self.graph.nodes[x]['pos'][2]
+        for i, x in enumerate(p[max_utility_path]):
+            self.path[i, 0] = self.graph.nodes[x]["pos"][0]
+            self.path[i, 1] = self.graph.nodes[x]["pos"][1]
+            self.path[i, 2] = self.graph.nodes[x]["pos"][2]
         return self.path
 
     def cost(self, i, j):
-        return np.linalg.norm(np.asarray(self.graph.nodes[i]['pos'])
-                              - np.asarray(self.graph.nodes[j]['pos']))
-
+        return np.linalg.norm(
+            np.asarray(self.graph.nodes[i]["pos"])
+            - np.asarray(self.graph.nodes[j]["pos"])
+        )
 
     def dijkstra(self, start):
         distances = {node: 0 for node in self.graph}
@@ -253,16 +330,20 @@ class TopoTree:
                 distance = current_distance + weight
                 if neighbor in paths[current_node]:
                     continue
-                    utility = -current_utility + self.graph.nodes[neighbor]['utility']
+                    utility = -current_utility + self.graph.nodes[neighbor]["utility"]
                 else:
-                    utility = -current_utility + self.graph.nodes[neighbor]['utility']
+                    utility = -current_utility + self.graph.nodes[neighbor]["utility"]
                 if distance >= self.budget:
                     continue
-                if utility >= utilities[neighbor]:  #and distance <= distances[neighbor]:
+                if (
+                    utility >= utilities[neighbor]
+                ):  # and distance <= distances[neighbor]:
                     utilities[neighbor] = utility
                     distances[neighbor] = distance
-                    if distance > 0.:
-                        cost_benefit[neighbor] = utility / np.exp(distance * self.exploration_distance_gain)
+                    if distance > 0.0:
+                        cost_benefit[neighbor] = utility / np.exp(
+                            distance * self.exploration_distance_gain
+                        )
                     paths[neighbor] = paths[current_node] + [neighbor]
                     heapq.heappush(queue, (-utility, distance, neighbor))
         return distances, utilities, paths, cost_benefit
@@ -273,16 +354,16 @@ class TopoTree:
         point_in_body = np.linalg.inv(self.odom) @ point_homogenous
 
         # print(f"point in body: {point_in_body}")
-        
+
         d = np.linalg.norm(point_in_body[1:3])
-        dist = d / np.tan(fov /2.)
+        dist = d / np.tan(fov / 2.0)
         return dist
-    
+
     def safeget(self, d, k, n):
         if k in d.keys():
             return d[k]
         else:
-            #print(k, " not in ", d.keys(), "for node ", n)
+            # print(k, " not in ", d.keys(), "for node ", n)
             return False
 
     def safedist(self, d, k, n):
@@ -290,29 +371,28 @@ class TopoTree:
             return d[k]
         else:
             return np.asarray([np.inf, np.inf])
-    
+
     def prune_old_frontier_candidates(self):
         self.frontier_graph = nx.Graph()
 
     def prune_frontiers(self):
         nodes_to_remove = []
         for node, data in self.graph.nodes(data=True):
-            if data['predicted']:
-                if data['utility'] == 0.0:
+            if data["predicted"]:
+                if data["utility"] == 0.0:
                     nodes_to_remove.append(node)
 
         self.graph.remove_nodes_from(nodes_to_remove)
 
     def zero_frontier_utilities(self):
         for node, data in self.graph.nodes(data=True):
-            if data['predicted']:
+            if data["predicted"]:
                 # data['utility'] = 0.
 
-                dist = np.linalg.norm(np.array(data['pos']) - self.odom_pos[:3])
-                
-                if dist < 4.0:
-                    data['utility'] = 0.
+                dist = np.linalg.norm(np.array(data["pos"]) - self.odom_pos[:3])
 
+                if dist < 4.0:
+                    data["utility"] = 0.0
 
     def print_graph(self):
         print("---------------------------------------------")
@@ -328,52 +408,104 @@ class TopoTree:
         if self.graph.number_of_nodes() == 0:
             return
         # check if point is inside boundary
-        if (point[0] >= self.bounds[0][1] or point[0] <= self.bounds[0][0]) or (point[1] >= self.bounds[1][1] or point[1] <= self.bounds[1][0]):
-                return
+        if (point[0] >= self.bounds[0][1] or point[0] <= self.bounds[0][0]) or (
+            point[1] >= self.bounds[1][1] or point[1] <= self.bounds[1][0]
+        ):
+            return
 
         dist = self.shortest_visible_distance(point, self.fov)
-
 
         sampled_points = np.zeros((self.num_samples, 3))
         dists = []
         self.node_id += 1
-        current_node_id = self.node_id  
-        
+        current_node_id = self.node_id
+
         ## Check if a sampled viewpoint is already good
-        _tmp_dists = [(node, np.linalg.norm(np.array(data['pos']) - point[:3])) for (node,data) in self.graph.nodes(data=True) if data['predicted'] ]
-        _tmp_dists = [] #[(n,d) for (n,d) in _tmp_dists if np.linalg.norm(d-dist) < 2.0]
-        if len(_tmp_dists): 
-            self.graph.nodes[_tmp_dists[0][0]]['utility'] = utility
-            _dists = [(node, np.linalg.norm(np.array(self.graph.nodes[_tmp_dists[0][0]]['pos']) - np.array(data['pos']))) for (node, data) in self.graph.nodes(data=True) if data['predicted'] == False]
+        _tmp_dists = [
+            (node, np.linalg.norm(np.array(data["pos"]) - point[:3]))
+            for (node, data) in self.graph.nodes(data=True)
+            if data["predicted"]
+        ]
+        _tmp_dists = []  # [(n,d) for (n,d) in _tmp_dists if np.linalg.norm(d-dist) < 2.0]
+        if len(_tmp_dists):
+            self.graph.nodes[_tmp_dists[0][0]]["utility"] = utility
+            _dists = [
+                (
+                    node,
+                    np.linalg.norm(
+                        np.array(self.graph.nodes[_tmp_dists[0][0]]["pos"])
+                        - np.array(data["pos"])
+                    ),
+                )
+                for (node, data) in self.graph.nodes(data=True)
+                if data["predicted"] == False
+            ]
             _id = min(_dists, key=lambda x: x[1])[0]
             self.graph.add_edge(_id, _tmp_dists[0][0])
 
-
-            self.graph_node_id +=1
-            self.frontier_graph.add_node(self.graph_node_id, pos=(point[0], point[1], point[2]), predicted=False, utility=0., frontier=True)
+            self.graph_node_id += 1
+            self.frontier_graph.add_node(
+                self.graph_node_id,
+                pos=(point[0], point[1], point[2]),
+                predicted=False,
+                utility=0.0,
+                frontier=True,
+            )
             return
-            
-        angle = np.linspace(0, 2*np.pi, self.num_samples)
+
+        angle = np.linspace(0, 2 * np.pi, self.num_samples)
         for i in range(self.num_samples):
             sampled_points[i, 0] = point[0] + np.cos(angle[i]) * dist
             sampled_points[i, 1] = point[1] + np.sin(angle[i]) * dist
             sampled_points[i, 2] = point[2]
-            _dists = [(node, np.linalg.norm(self.safedist(data, 'pos', node) - sampled_points[i,:3])) for node, data in self.graph.nodes(data=True) if self.safeget(data, "predicted", node) == False and self.safeget(data, "frontier", node) == False]
-            #_dists = [(x,y) if (y > 1.0 and y < 2.0) else (x, np.inf)for x,y in _dists]
+            _dists = [
+                (
+                    node,
+                    np.linalg.norm(
+                        self.safedist(data, "pos", node) - sampled_points[i, :3]
+                    ),
+                )
+                for node, data in self.graph.nodes(data=True)
+                if self.safeget(data, "predicted", node) == False
+                and self.safeget(data, "frontier", node) == False
+            ]
+            # _dists = [(x,y) if (y > 1.0 and y < 2.0) else (x, np.inf)for x,y in _dists]
             min_id = min(enumerate(_dists), key=lambda x: x[1][1])[0]
             min_node = _dists[min_id][0]
             dists.append((current_node_id, min_node, min_id, _dists[min_id][1]))
-            
-        min_id = min(enumerate(dists), key=lambda x: x[1][3])[0] 
+
+        min_id = min(enumerate(dists), key=lambda x: x[1][3])[0]
         for min_id, _ in enumerate(dists):
-            if (sampled_points[min_id,0] <= self.bounds[0][0] or sampled_points[min_id,0] >= self.bounds[0][1]) or (sampled_points[min_id,1] <= self.bounds[1][0] or sampled_points[min_id,1] >= self.bounds[1][1]):
+            if (
+                sampled_points[min_id, 0] <= self.bounds[0][0]
+                or sampled_points[min_id, 0] >= self.bounds[0][1]
+            ) or (
+                sampled_points[min_id, 1] <= self.bounds[1][0]
+                or sampled_points[min_id, 1] >= self.bounds[1][1]
+            ):
                 continue
             self.node_id += 1
-            self.graph.add_node(self.node_id, pos=(sampled_points[min_id,0], sampled_points[min_id,1], sampled_points[min_id,2]), predicted=True, utility=utility, frontier=False)
+            self.graph.add_node(
+                self.node_id,
+                pos=(
+                    sampled_points[min_id, 0],
+                    sampled_points[min_id, 1],
+                    sampled_points[min_id, 2],
+                ),
+                predicted=True,
+                utility=utility,
+                frontier=False,
+            )
             self.graph.add_edge(self.node_id, dists[min_id][1])
-        self.graph_node_id +=1
-        self.frontier_graph.add_node(self.graph_node_id, pos=(point[0], point[1], point[2]), predicted=False, utility=0., frontier=True)
-    
+        self.graph_node_id += 1
+        self.frontier_graph.add_node(
+            self.graph_node_id,
+            pos=(point[0], point[1], point[2]),
+            predicted=False,
+            utility=0.0,
+            frontier=True,
+        )
+
     def publish_graph_markers(self):
         marker_array = MarkerArray()
         # print("world frame id is: ", self.world_frame_id)
@@ -381,14 +513,14 @@ class TopoTree:
             return
         marker_array_msg = MarkerArray()
         marker = Marker()
-        marker.ns = 'graph_nodes'
+        marker.ns = "graph_nodes"
         marker.header.frame_id = self.world_frame_id
         marker.id = 0
         marker.action = Marker.DELETEALL
         marker_array_msg.markers.append(marker)
         self.marker_pub.publish(marker_array_msg)
 
-        #add map bounds
+        # add map bounds
         bounds_marker = Marker()
         bounds_marker.header.frame_id = self.world_frame_id
         bounds_marker.header.stamp = rospy.Time.now()
@@ -402,10 +534,18 @@ class TopoTree:
         bounds_marker.color.g = 0.0
         bounds_marker.color.b = 1.0
 
-        p1 = self.create_point((self.bounds[0][0], self.bounds[1][0], self.bounds[0][2]))
-        p2 = self.create_point((self.bounds[0][1], self.bounds[1][0], self.bounds[0][2]))
-        p3 = self.create_point((self.bounds[0][1], self.bounds[1][1], self.bounds[1][2]))
-        p4 = self.create_point((self.bounds[0][0], self.bounds[1][1], self.bounds[1][2]))
+        p1 = self.create_point(
+            (self.bounds[0][0], self.bounds[1][0], self.bounds[0][2])
+        )
+        p2 = self.create_point(
+            (self.bounds[0][1], self.bounds[1][0], self.bounds[0][2])
+        )
+        p3 = self.create_point(
+            (self.bounds[0][1], self.bounds[1][1], self.bounds[1][2])
+        )
+        p4 = self.create_point(
+            (self.bounds[0][0], self.bounds[1][1], self.bounds[1][2])
+        )
         bounds_marker.points = [p1, p2, p3, p4, p1]
         marker_array.markers.append(bounds_marker)
 
@@ -419,9 +559,9 @@ class TopoTree:
                 marker.id = node
                 marker.type = Marker.SPHERE
                 marker.action = Marker.ADD
-                marker.pose.position.x = data['pos'][0]
-                marker.pose.position.y = data['pos'][1]
-                marker.pose.position.z = data['pos'][2]
+                marker.pose.position.x = data["pos"][0]
+                marker.pose.position.y = data["pos"][1]
+                marker.pose.position.z = data["pos"][2]
                 marker.pose.orientation.x = 0.0
                 marker.pose.orientation.y = 0.0
                 marker.pose.orientation.z = 0.0
@@ -430,11 +570,11 @@ class TopoTree:
                 marker.scale.y = 0.1
                 marker.scale.z = 0.1
                 marker.color.a = 1.0
-                if data['predicted']:
+                if data["predicted"]:
                     marker.color.r = 1.0
                     marker.color.g = 0.0
                     marker.color.b = 0.0
-                elif data['frontier']:
+                elif data["frontier"]:
                     marker.color.r = 0.0
                     marker.color.g = 0.0
                     marker.color.b = 0.0
@@ -455,9 +595,9 @@ class TopoTree:
                 marker.id = node
                 marker.type = Marker.SPHERE
                 marker.action = Marker.ADD
-                marker.pose.position.x = data['pos'][0]
-                marker.pose.position.y = data['pos'][1]
-                marker.pose.position.z = data['pos'][2]
+                marker.pose.position.x = data["pos"][0]
+                marker.pose.position.y = data["pos"][1]
+                marker.pose.position.z = data["pos"][2]
                 marker.pose.orientation.x = 0.0
                 marker.pose.orientation.y = 0.0
                 marker.pose.orientation.z = 0.0
@@ -466,11 +606,11 @@ class TopoTree:
                 marker.scale.y = 0.1
                 marker.scale.z = 0.1
                 marker.color.a = 1.0
-                if data['predicted']:
+                if data["predicted"]:
                     marker.color.r = 1.0
                     marker.color.g = 0.0
                     marker.color.b = 0.0
-                elif data['frontier']:
+                elif data["frontier"]:
                     marker.color.r = 0.0
                     marker.color.g = 0.0
                     marker.color.b = 0.0
@@ -481,7 +621,6 @@ class TopoTree:
                 marker_array.markers.append(marker)
             except:
                 pass
-
 
         # Add edges as lines
         for edge in self.graph.edges:
@@ -495,7 +634,10 @@ class TopoTree:
                 marker.action = Marker.ADD
                 marker.scale.x = 0.05
 
-                if(self.graph.nodes[edge[0]]['predicted'] or self.graph.nodes[edge[1]]['predicted']):
+                if (
+                    self.graph.nodes[edge[0]]["predicted"]
+                    or self.graph.nodes[edge[1]]["predicted"]
+                ):
                     marker.color.a = 0.2
                     marker.color.r = 0.0
                     marker.color.g = 0.0
@@ -506,10 +648,9 @@ class TopoTree:
                     marker.color.g = 0.0
                     marker.color.b = 1.0
 
-        
-                p1 = self.graph.nodes[edge[0]]['pos']
-                p2 = self.graph.nodes[edge[1]]['pos']
-        
+                p1 = self.graph.nodes[edge[0]]["pos"]
+                p2 = self.graph.nodes[edge[1]]["pos"]
+
                 marker.points = [self.create_point(p1), self.create_point(p2)]
                 marker_array.markers.append(marker)
             except:
@@ -525,10 +666,10 @@ class TopoTree:
             return
 
         marker_array = MarkerArray()
-        
+
         # Delete old cost markers
         marker = Marker()
-        marker.ns = 'cost_values'
+        marker.ns = "cost_values"
         marker.header.frame_id = self.world_frame_id
         marker.id = 0
         marker.action = Marker.DELETEALL
@@ -538,22 +679,23 @@ class TopoTree:
 
         # Find max value for color normalization
         max_val = max(cost_benefits.values()) if cost_benefits else 1.0
-        if max_val == 0: max_val = 1.0
+        if max_val == 0:
+            max_val = 1.0
 
         for node in cost_benefits:
             if node not in self.graph.nodes:
                 continue
-            
+
             distance = distances.get(node, 0.0)
             uncertainty = utilities.get(node, 0.0)
             cost_benefit = cost_benefits.get(node, 0.0)
-            
+
             # Skip showing 0.0 costs to reduce clutter
             # if value <= 0.001:
             #     continue
 
-            pos = self.graph.nodes[node]['pos']
-            
+            pos = self.graph.nodes[node]["pos"]
+
             marker = Marker()
             marker.header.frame_id = self.world_frame_id
             marker.header.stamp = rospy.Time.now()
@@ -566,17 +708,19 @@ class TopoTree:
             marker.pose.position.z = pos[2] + 0.5  # Float 0.5m above the node
             marker.pose.orientation.w = 1.0
             marker.scale.z = 0.2  # Text height
-            
+
             # Color Map: Red (Low) -> Green (High)
             norm_val = cost_benefit / max_val
             marker.color.r = 1.0 - norm_val
             marker.color.g = norm_val
             marker.color.b = 0.0
             marker.color.a = 1.0
-            
-            marker.text = f"CB: {cost_benefit:.3f} \n D: {distance:.3f} \n U: {uncertainty:.3f}"
+
+            marker.text = (
+                f"CB: {cost_benefit:.3f} \n D: {distance:.3f} \n U: {uncertainty:.3f}"
+            )
             marker_array.markers.append(marker)
-            
+
         self.marker_pub.publish(marker_array)
 
     def create_point(self, pos):
@@ -587,10 +731,9 @@ class TopoTree:
         return point
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         TopoTree()
         rospy.spin()
     except rospy.ROSInterruptException:
         pass
-
