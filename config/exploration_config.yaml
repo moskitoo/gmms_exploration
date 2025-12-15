@@ -36,6 +36,12 @@ sogmm_node:
   fusion_weight_update: true
 
 # (x,y) bounds
-map_bounds: [[-0.8, 8.7, 0.0], [-2.75, 2.9, 0.0]] # hidden obstacle
-# map_bounds: [[-3.5, 11.25], [-6., 5.8]] # big empty arena
-# map_bounds: [[-0.65, 9.0, 0.0], [-1.0, 4.5, 0.0]]  # custom arena (cluttered)
+map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 3.0]] # hidden obstacle
+# map_bounds: [[-3.5, 11.25], [-6., 5.8], [0.0, 3.0]] # big empty arena
+# map_bounds: [[-0.65, 9.0, 0.0], [-1.0, 4.5, 0.0], [0.0, 3.0]]  # custom arena (cluttered)
+
+sogmm_grid_node:
+  static_cluster_center: True
+  grid_marker_scale: 0.5
+  grid_cell_size: 0.5
+  unexplored_uncertainty: -1.0
