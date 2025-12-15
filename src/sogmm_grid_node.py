@@ -11,19 +11,22 @@ import tf
 import tf2_ros
 from geometry_msgs.msg import PoseStamped, TransformStamped, Point
 from nav_msgs.msg import Odometry
-from rtree import index
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
 from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel, Grid
 from gmms_exploration.srv import FlyTrajectory, GetViewpoint, GetViewpointResponse
 from rospy.impl.tcpros_service import Service
+from typing import List, Tuple
 
 
 class ExplorationGrid:
     def __init__(
         self,
         grid_cell_size: float = 0.05,
+        static_cluster_center: bool = False,
+        map_bounds: List[Tuple] = [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)],
+        unexplored_uncertainty: float = 1.0,
     ):
         self.grid_cell_size = grid_cell_size
 
@@ -32,8 +35,52 @@ class ExplorationGrid:
         self.uncertainties = None
         self.weights = None
         
-        self.cluster_centroids = np.array([])
-        self.average_gradient_magnitudes = np.array([])
+        self.static_cluster_center = static_cluster_center
+        self.unexplored_uncertainty = unexplored_uncertainty
+        
+        # FIX: Convert tuples to lists and expand bounds properly
+        self.map_bounds = [
+            [map_bounds[0][0] - grid_cell_size, map_bounds[0][1] + grid_cell_size],
+            [map_bounds[1][0] - grid_cell_size, map_bounds[1][1] + grid_cell_size],
+            [map_bounds[2][0] - grid_cell_size, map_bounds[2][1] + grid_cell_size]
+        ]
+
+        if self.static_cluster_center:
+            # Calculate number of cells in each dimension
+            grid_length = int(np.round((self.map_bounds[0][1] - self.map_bounds[0][0]) / self.grid_cell_size))
+            grid_width = int(np.round((self.map_bounds[1][1] - self.map_bounds[1][0]) / self.grid_cell_size))
+            grid_height = int(np.round((self.map_bounds[2][1] - self.map_bounds[2][0]) / self.grid_cell_size))
+            
+            # FIX: Create coordinates at cell CENTERS using arange for consistency
+            x_coords = self.map_bounds[0][0] + (np.arange(grid_length) + 0.5) * self.grid_cell_size
+            y_coords = self.map_bounds[1][0] + (np.arange(grid_width) + 0.5) * self.grid_cell_size
+            z_coords = self.map_bounds[2][0] + (np.arange(grid_height) + 0.5) * self.grid_cell_size
+            
+            # Create meshgrid and reshape to (N, 3) array
+            xx, yy, zz = np.meshgrid(x_coords, y_coords, z_coords, indexing='ij')
+            self.cluster_centroids = np.stack([xx.flatten(), yy.flatten(), zz.flatten()], axis=-1)
+            
+            # Initialize gradient magnitudes to unexplored value
+            self.average_gradient_magnitudes = np.full(len(self.cluster_centroids), unexplored_uncertainty)
+            
+            # Store grid dimensions for indexing (x, y, z order)
+            self.grid_dims = (grid_length, grid_width, grid_height)
+            
+            # FIX: min_bounds should be the START of the first cell (grid edge)
+            self.min_bounds = np.array([
+                self.map_bounds[0][0],
+                self.map_bounds[1][0],
+                self.map_bounds[2][0]
+            ])
+            
+            rospy.loginfo(f"Grid dimensions (x,y,z): {self.grid_dims}")
+            rospy.loginfo(f"Grid bounds: {self.map_bounds}")
+            rospy.loginfo(f"Min bounds: {self.min_bounds}")
+            rospy.loginfo(f"Total grid cells: {len(self.cluster_centroids)}")
+        else:
+            self.cluster_centroids = np.array([])
+            self.average_gradient_magnitudes = np.array([])
+
 
     def update_grid(self, means, covs, uncertainties, weights):
         self.means = means
@@ -41,31 +88,45 @@ class ExplorationGrid:
         self.uncertainties = uncertainties
         self.weights = weights
 
-        self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
+        if self.static_cluster_center:
+            # Don't reset - grid persists values from previous iterations
+            # Only updated cells will change based on new measurements
+            self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True, nms_filter=False)
+        else:
+            self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True, nms_filter=False)
         # self.cluster_centroids_not_filtered, self.average_gradient_magnitudes_not_filtered = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
 
         # rospy.logdebug(f"centroid number         : {self.cluster_centroids_not_filtered.shape}\n")
         rospy.logdebug(f"centroids shape: {self.cluster_centroids.shape}")
 
 
-    def get_gaussian_frontiers(self, means, uncertainties, cluster_size=0.1, nms_radius=1.5, filter_grad_mean=False):
+    def get_gaussian_frontiers(self, means, uncertainties, cluster_size=0.1, nms_radius=1.5, filter_grad_mean=False, nms_filter=False):
 
         # cluster size
         inverse_cluster_size = 1.0 / cluster_size
 
         # compute cluster indices
-        cluster_indices = np.floor(means * inverse_cluster_size).astype(int)
+        if self.static_cluster_center:
+            # For static mode, compute indices relative to min_bounds
+            cluster_indices = np.floor((means - self.min_bounds) * inverse_cluster_size).astype(int)
+        else:
+            cluster_indices = np.floor(means * inverse_cluster_size).astype(int)
+        
         unique_cluster_indices, inverse_indices = np.unique(cluster_indices, axis=0, return_inverse=True)
 
         # rospy.logdebug(f"cluster_indices: {cluster_indices}")
         # rospy.logdebug(f"unique_cluster_indices: {unique_cluster_indices}")
+
+        # rospy.logdebug(f"cluster_centroids: {unique_cluster_indices * cluster_size}")
+
+        # rospy.logdebug(f"means: {means}")
 
         num_unique = len(unique_cluster_indices)
         sum_means = np.zeros((num_unique, 3))
         sum_grads = np.zeros((num_unique, 1))
         counts = np.zeros(num_unique, dtype=int)
 
-        rospy.logdebug(f"num_unique: {num_unique}")
+        # rospy.logdebug(f"num_unique: {num_unique}")
 
         # compute means for each cluster
         np.add.at(sum_means, inverse_indices, means)
@@ -84,23 +145,61 @@ class ExplorationGrid:
         # rospy.logdebug(f"mean_positions: {mean_positions}")
         # rospy.logdebug(f"mean_grads: {mean_grads}")
 
-        # only keep centroids above grad mean
+        if self.static_cluster_center:
+            # Update the pre-initialized grid with new gradient values
+            # Apply gradient filtering if needed
+            if filter_grad_mean:
+                avg_grad = np.mean(mean_grads)
+                ths_grad = avg_grad
+                grads_mask = (mean_grads > ths_grad).flatten()
+                filtered_cluster_indices = unique_cluster_indices[grads_mask]
+                filtered_mean_grads = mean_grads[grads_mask]
+            else:
+                filtered_cluster_indices = unique_cluster_indices
+                filtered_mean_grads = mean_grads
+            
+            # Update grid cells with gradient values
+            for cluster_idx, grad in zip(filtered_cluster_indices, filtered_mean_grads):
+                # FIX: Check bounds properly and convert to flat index
+                if (cluster_idx >= 0).all() and \
+                cluster_idx[0] < self.grid_dims[0] and \
+                cluster_idx[1] < self.grid_dims[1] and \
+                cluster_idx[2] < self.grid_dims[2]:
+                    # Convert 3D grid index to flat index (row-major order)
+                    flat_idx = (cluster_idx[0] * self.grid_dims[1] * self.grid_dims[2] + 
+                                cluster_idx[1] * self.grid_dims[2] + 
+                                cluster_idx[2])
+                    
+                    rospy.logdebug(f"Updating grid cell [{cluster_idx[0]}, {cluster_idx[1]}, {cluster_idx[2]}] "
+                                f"(flat idx {flat_idx}) with uncertainty {grad[0]:.3f}")
+                    rospy.logdebug(f"Cell center: {self.cluster_centroids[flat_idx]}")
+                    
+                    self.average_gradient_magnitudes[flat_idx] = grad[0]
+                else:
+                    rospy.logwarn(f"Cluster index {cluster_idx} out of bounds! Grid dims: {self.grid_dims}")
+            
+            # Don't return anything, grid is updated in place
+            return None, None
+        
+        # For dynamic mode, apply filtering after computing cluster centroids
         if filter_grad_mean:
             avg_grad = np.mean(mean_grads)
-            # std_grad = np.std(mean_grads)
-            ths_grad = avg_grad# + std_grad
+            ths_grad = avg_grad
             grads_mask = (mean_grads > ths_grad).flatten()
             mean_positions = mean_positions[grads_mask]
             mean_grads = mean_grads[grads_mask]
 
         cluster_centroids = mean_positions
+
         average_gradient_magnitudes = mean_grads.flatten()
+
+        # rospy.logdebug(f"cluster_centroids: {cluster_centroids}")
         
         sorted_indices = np.argsort(average_gradient_magnitudes)
         cluster_centroids = cluster_centroids[sorted_indices]
         average_gradient_magnitudes = average_gradient_magnitudes[sorted_indices]
 
-        if len(cluster_centroids) > 0:
+        if len(cluster_centroids) > 0 and nms_filter:
             distances = np.linalg.norm(cluster_centroids[:, np.newaxis] - cluster_centroids[np.newaxis, :], axis=2)
             keep_indices = np.ones(len(cluster_centroids), dtype=bool)
 
@@ -141,7 +240,7 @@ class ExplorationGrid:
 
         return world_x, world_y
 
-    def get_grid_vis(self, frame_id="map", timestamp=None):
+    def get_grid_vis(self, frame_id="map", timestamp=None, marker_scale=0.5):
         """
         Generates a MarkerArray for visualizing the uncertainty grid.
         """
@@ -164,39 +263,41 @@ class ExplorationGrid:
             world_x, world_y, world_z = self.cluster_centroids[i]
             uncertainty = self.average_gradient_magnitudes[i]
 
-            marker = Marker()
-            marker.header.frame_id = frame_id
-            marker.header.stamp = timestamp
-            marker.ns = "exploration_grid"
-            marker.id = marker_id
-            marker_id += 1
-            marker.type = Marker.CUBE
-            marker.action = Marker.ADD
-            marker.lifetime = rospy.Duration(0)
+            if uncertainty >= 0.0:
 
-            marker.pose.position.x = world_x
-            marker.pose.position.y = world_y
-            marker.pose.position.z = world_z
+                marker = Marker()
+                marker.header.frame_id = frame_id
+                marker.header.stamp = timestamp
+                marker.ns = "exploration_grid"
+                marker.id = marker_id
+                marker_id += 1
+                marker.type = Marker.CUBE
+                marker.action = Marker.ADD
+                marker.lifetime = rospy.Duration(0)
 
-            # Set orientation
-            marker.pose.orientation.x = 0.0
-            marker.pose.orientation.y = 0.0
-            marker.pose.orientation.z = 0.0
-            marker.pose.orientation.w = 1.0
+                marker.pose.position.x = world_x
+                marker.pose.position.y = world_y
+                marker.pose.position.z = world_z
 
-            # Scale: x and y match the grid resolution, z matches uncertainty
-            marker.scale.x = self.grid_cell_size
-            marker.scale.y = self.grid_cell_size
-            marker.scale.z = self.grid_cell_size
+                # Set orientation
+                marker.pose.orientation.x = 0.0
+                marker.pose.orientation.y = 0.0
+                marker.pose.orientation.z = 0.0
+                marker.pose.orientation.w = 1.0
 
-            # Color: Map uncertainty to color
-            color = cm.plasma(1-uncertainty)
-            marker.color.r = color[0]
-            marker.color.g = color[1]
-            marker.color.b = color[2]
-            marker.color.a = 0.8
+                # Scale: x and y match the grid resolution, z matches uncertainty
+                marker.scale.x = self.grid_cell_size * marker_scale
+                marker.scale.y = self.grid_cell_size * marker_scale
+                marker.scale.z = self.grid_cell_size * marker_scale
 
-            marker_array.markers.append(marker)
+                # Color: Map uncertainty to color
+                color = cm.plasma(1-uncertainty)
+                marker.color.r = color[0]
+                marker.color.g = color[1]
+                marker.color.b = color[2]
+                marker.color.a = 0.8
+
+                marker_array.markers.append(marker)
 
         return marker_array
     
@@ -283,9 +384,16 @@ class SOGMMGridNode:
 
         # Parameters
         self.gmm_topic = rospy.get_param("~gmm_topic", "/starling1/mpa/gmm")
+        self.static_cluster_center = rospy.get_param("~static_cluster_center", False)
+        self.map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0, 0.0), (-1.0, 4.5, 0.0)])
+        self.grid_marker_scale = rospy.get_param("~grid_marker_scale", 1.0)
+        self.grid_cell_size = rospy.get_param("~grid_cell_size", 1.0)
+        self.unexplored_uncertainty = rospy.get_param("~unexplored_uncertainty", 1.0)
+
+        rospy.logdebug(f"self.grid_marker_scale: {self.grid_marker_scale}")
 
         self.exploration_grid = ExplorationGrid(
-            grid_cell_size=1.0
+            grid_cell_size=self.grid_cell_size, static_cluster_center= self.static_cluster_center, map_bounds=self.map_bounds, unexplored_uncertainty=self.unexplored_uncertainty
         )
 
         # Subscribers
@@ -313,7 +421,7 @@ class SOGMMGridNode:
         self.reached_target = True
 
     def gmm_callback(self, msg: GaussianMixtureModel):
-        rospy.logdebug("Received GMM")
+        # rospy.logdebug("Received GMM")
 
         # Process pose directly in callback to avoid threading issues
         self.process_gmm(msg)
@@ -321,8 +429,6 @@ class SOGMMGridNode:
     def process_gmm(self, msg: GaussianMixtureModel):
         gmm = msg.components
         n_components = len(gmm)
-
-        rospy.logdebug(f"received gaussians: {n_components}")
 
         if n_components > 0:
             means = np.empty([n_components, 3])
@@ -336,21 +442,25 @@ class SOGMMGridNode:
                 uct[i] = gmm[i].uncertainty
                 weights[i] = gmm[i].weight
 
-            rospy.logdebug(f"means shape: {means.shape}")
-            rospy.logdebug(f"covs shape: {covs.shape}")
-            rospy.logdebug(f"unct shape: {uct.shape}")
-
             self.exploration_grid.update_grid(means, covs, uct, weights)
 
             self.grid_pub.publish(self.exploration_grid.compose_grid_msg())
 
             self.grid_marker_pub.publish(
-                self.exploration_grid.get_grid_vis("map", msg.header.stamp)
+                self.exploration_grid.get_grid_vis("map", msg.header.stamp, marker_scale=self.grid_marker_scale)
             )
 
             self.means_marker_pub.publish(
                 self.exploration_grid.get_means_vis(means, "map", msg.header.stamp)
             )
+
+        rospy.logdebug(f"First 5 means from measurement: {means[:5]}")
+        rospy.logdebug(f"First 5 uncertainties: {uct[:5]}")
+        rospy.logdebug(f"Min/Max grid uncertainty after update: "
+                    f"{np.min(self.exploration_grid.average_gradient_magnitudes):.3f} / "
+                    f"{np.max(self.exploration_grid.average_gradient_magnitudes):.3f}")
+        rospy.logdebug(f"Number of cells with uncertainty != {self.unexplored_uncertainty}: "
+                    f"{np.sum(self.exploration_grid.average_gradient_magnitudes != self.unexplored_uncertainty)}")
 
     def get_viewpoint_callback(self, req):
         x, y = self.exploration_grid.get_viewpoint()
