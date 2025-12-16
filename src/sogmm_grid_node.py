@@ -390,11 +390,16 @@ class SOGMMGridNode:
         self.grid_marker_scale = rospy.get_param("~grid_marker_scale", 1.0)
         self.grid_cell_size = rospy.get_param("~grid_cell_size", 1.0)
         self.unexplored_uncertainty = rospy.get_param("~unexplored_uncertainty", 1.0)
+        self.grid_offset = rospy.get_param("~grid_offset", 0.5)
 
         rospy.logdebug(f"self.grid_marker_scale: {self.grid_marker_scale}")
 
         self.exploration_grid = ExplorationGrid(
-            grid_cell_size=self.grid_cell_size, static_cluster_center= self.static_cluster_center, map_bounds=self.map_bounds, unexplored_uncertainty=self.unexplored_uncertainty
+            grid_cell_size=self.grid_cell_size, 
+            static_cluster_center=self.static_cluster_center, 
+            map_bounds=self.map_bounds, 
+            unexplored_uncertainty=self.unexplored_uncertainty,
+            grid_offset=self.grid_offset
         )
 
         # Subscribers

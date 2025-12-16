@@ -42,6 +42,7 @@ map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 3.0]] # hidden obstacle
 
 sogmm_grid_node:
   static_cluster_center: True
+  grid_cell_size: 2.0
   grid_marker_scale: 0.5
-  grid_cell_size: 0.5
+  grid_offset: 1.0
   unexplored_uncertainty: -1.0
