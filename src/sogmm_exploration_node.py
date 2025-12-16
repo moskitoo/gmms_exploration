@@ -117,9 +117,11 @@ class SOGMMExplorationNode:
             self.viewpoint.x = next_waypoint[0]
             self.viewpoint.y = next_waypoint[1]
             # Clamp z to map bounds
-            map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
-            z_min, z_max = map_bounds[2]
-            self.viewpoint.z = np.clip(next_waypoint[2], z_min, z_max)
+            # map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
+            # z_min, z_max = map_bounds[2]
+
+            # self.viewpoint.z = np.clip(next_waypoint[2], z_min, z_max)
+            self.viewpoint.z = next_waypoint[2]
 
             rospy.loginfo(f"Sending waypoint {target_index + 1}/{len(self.path_to_ftr)}: {self.viewpoint}")
 
