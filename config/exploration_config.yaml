@@ -35,8 +35,10 @@ sogmm_node:
 
   fusion_weight_update: true
 
+  publish_whole_gmm: true
+
 # (x,y) bounds
-map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 3.0]] # hidden obstacle
+map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 2.0]] # hidden obstacle
 # map_bounds: [[-3.5, 11.25], [-6., 5.8], [0.0, 3.0]] # big empty arena
 # map_bounds: [[-0.65, 9.0, 0.0], [-1.0, 4.5, 0.0], [0.0, 3.0]]  # custom arena (cluttered)
 
@@ -44,9 +46,9 @@ sogmm_grid_node:
   grid_cell_size: 2.0
   grid_marker_scale: 0.5
   grid_offset: 1.0
-  unexplored_uncertainty: 0.5
+  unexplored_uncertainty: 1.0
 
 sogmm_exploration_node:
-  exploration_distance_gain: 0.0
+  exploration_distance_gain: 0.2
 
 simple_exploration: True

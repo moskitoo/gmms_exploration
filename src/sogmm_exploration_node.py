@@ -116,7 +116,10 @@ class SOGMMExplorationNode:
             self.viewpoint = Point()
             self.viewpoint.x = next_waypoint[0]
             self.viewpoint.y = next_waypoint[1]
-            self.viewpoint.z = next_waypoint[2]
+            # Clamp z to map bounds
+            map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
+            z_min, z_max = map_bounds[2]
+            self.viewpoint.z = np.clip(next_waypoint[2], z_min, z_max)
 
             rospy.loginfo(f"Sending waypoint {target_index + 1}/{len(self.path_to_ftr)}: {self.viewpoint}")
 
@@ -135,6 +138,14 @@ class SOGMMExplorationNode:
                 self.current_waypoint_index = target_index + 1
                 self.consecutive_failures = 0
                 self.viewpoint_attempt_count = 0  # Reset for next viewpoint
+                
+                # In simple mode, mark the region as visited when reaching the viewpoint
+                if self.simple_mode and hasattr(self.topo_tree, 'ranked_viewpoints'):
+                    if hasattr(self.topo_tree, 'current_viewpoint_rank') and \
+                       self.topo_tree.current_viewpoint_rank < len(self.topo_tree.ranked_viewpoints):
+                        current_vp = self.topo_tree.ranked_viewpoints[self.topo_tree.current_viewpoint_rank]
+                        if 'region_center' in current_vp:
+                            self.topo_tree.mark_region_visited(current_vp['region_center'], current_vp['utility'])
                 
                 if self.current_waypoint_index >= len(self.path_to_ftr):
                     rospy.loginfo("Completed path.")

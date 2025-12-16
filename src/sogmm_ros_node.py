@@ -623,6 +623,8 @@ class SOGMMROSNode:
         self.freeze_interval_frames = rospy.get_param("~freeze_interval_frames", 5)
         self.freeze_fusion_threshold = rospy.get_param("~freeze_fusion_threshold", 20)
 
+        self.publish_whole_gmm = rospy.get_param("~publish_whole_gmm", False)
+
         self.fusion_weight_update = rospy.get_param("~fusion_weight_update", False)
 
     def _setup_communication(self):
@@ -830,7 +832,7 @@ class SOGMMROSNode:
         updated_indices = self.master_gmm.find_spatial_candidates(local_model_cpu)
 
         for idx in range(self.master_gmm.model.n_components_):
-            if idx in updated_indices:
+            if idx in updated_indices or self.publish_whole_gmm:
                 gaussian_component = GaussianComponent()
                 # use the first 3 dimensions of the mean (x,y,z)
                 gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
@@ -843,9 +845,11 @@ class SOGMMROSNode:
                 gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
                 gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
                 gmm_msg.components.append(gaussian_component)
-            
-        # gmm_msg.n_components = self.master_gmm.model.n_components_
-        gmm_msg.n_components = len(updated_indices)
+        
+        if self.publish_whole_gmm:
+            gmm_msg.n_components = self.master_gmm.model.n_components_
+        else:
+            gmm_msg.n_components = len(updated_indices)
 
         self.gmm_pub.publish(gmm_msg)
 

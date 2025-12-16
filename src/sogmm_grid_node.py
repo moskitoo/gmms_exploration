@@ -110,6 +110,10 @@ class ExplorationGrid:
         if self.static_cluster_center:
             # For static mode, compute indices relative to min_bounds
             cluster_indices = np.floor((means - self.min_bounds) * inverse_cluster_size).astype(int)
+            # Clip to valid range
+            cluster_indices = np.clip(cluster_indices, 
+                                    [0, 0, 0], 
+                                    [self.grid_dims[0]-1, self.grid_dims[1]-1, self.grid_dims[2]-1])
         else:
             cluster_indices = np.floor(means * inverse_cluster_size).astype(int)
         
@@ -385,7 +389,7 @@ class SOGMMGridNode:
 
         # Parameters
         self.gmm_topic = rospy.get_param("~gmm_topic", "/starling1/mpa/gmm")
-        self.static_cluster_center = rospy.get_param("~static_cluster_center", False)
+        self.static_cluster_center = rospy.get_param("/simple_exploration", False)
         self.map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0, 0.0), (-1.0, 4.5, 0.0)])
         self.grid_marker_scale = rospy.get_param("~grid_marker_scale", 1.0)
         self.grid_cell_size = rospy.get_param("~grid_cell_size", 1.0)

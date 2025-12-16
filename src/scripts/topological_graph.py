@@ -34,7 +34,7 @@ class TopoTree:
         self.fov = np.radians(116.0)
         self.num_samples = 20
         self.budget = 50.0
-        self.min_viewpoint_distance = 0.01  # Minimum distance to select a viewpoint
+        self.min_viewpoint_distance = 0.5  # Minimum distance to select a viewpoint
         self.odom_id = 0
         self.graph_node_id = 0
         self.path = None
@@ -56,11 +56,28 @@ class TopoTree:
             self.selected_viewpoint = None
             self.ranked_viewpoints = []  # Ranked list of viewpoints for fallback
             self.current_viewpoint_rank = 0  # Track current viewpoint in ranked list
+            
+            # Dead region tracking
+            self.visited_regions = {}  # {region_id: {'center': np.array, 'utility': float, 'visit_count': int}}
+            self.dead_regions = set()  # Set of region_ids that are dead
+            self.region_match_distance = rospy.get_param('~region_match_distance', 1.0)  # Distance to consider same region
+            self.dead_region_visit_threshold = rospy.get_param('~dead_region_visit_threshold', 2)  # Visits before marking dead
+            self.utility_change_threshold = rospy.get_param('~utility_change_threshold', 0.01)  # Min utility change to not be dead
+            
             rospy.loginfo("TopoTree initialized in SIMPLE MODE")
         else:
             rospy.loginfo("TopoTree initialized in GRAPH MODE (RT-GuIDE)")
 
+        # Get map bounds and grid offset to match grid generation
         self.bounds = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
+        self.grid_offset = rospy.get_param("~grid_offset", 0.5)
+        
+        # Extend bounds to match grid generation (for region filtering)
+        self.extended_bounds = [
+            [self.bounds[0][0] - self.grid_offset, self.bounds[0][1] + self.grid_offset],
+            [self.bounds[1][0] - self.grid_offset, self.bounds[1][1] + self.grid_offset],
+            [self.bounds[2][0] - self.grid_offset, self.bounds[2][1] + self.grid_offset]
+        ]
 
         # height=7.0, width=11, center_coorinates=(4.0, 0.0),
 
@@ -297,17 +314,27 @@ class TopoTree:
 
         # Clear old candidates and add new ones
         self.viewpoint_candidates = []
+        dead_region_count = 0
         
         for i, p in enumerate(point):
-            # Check bounds
-            if (p[0] >= self.bounds[0][1] or p[0] <= self.bounds[0][0]) or (
-                p[1] >= self.bounds[1][1] or p[1] <= self.bounds[1][0]
+            # Check bounds - use extended bounds to include edge regions from grid
+            if (p[0] >= self.extended_bounds[0][1] or p[0] <= self.extended_bounds[0][0]) or (
+                p[1] >= self.extended_bounds[1][1] or p[1] <= self.extended_bounds[1][0]
             ):
+                continue
+            
+            # Skip dead regions
+            if self.is_region_dead(p):
+                dead_region_count += 1
+                rospy.logdebug(f"[Dead Region] Skipping dead region at {p}")
                 continue
             
             # Generate viewpoints around the region center
             viewpoints = self.generate_viewpoints_simple(p, utility[i])
             self.viewpoint_candidates.extend(viewpoints)
+        
+        if dead_region_count > 0:
+            rospy.loginfo(f"[Dead Region] Filtered out {dead_region_count} dead regions from exploration")
 
         if not self.viewpoint_candidates:
             rospy.logwarn("[Simple mode] No valid viewpoint candidates")
@@ -419,6 +446,76 @@ class TopoTree:
             self.path[i, 2] = self.graph.nodes[x]["pos"][2]
         return self.path
 
+    def find_visited_region(self, region_center):
+        """
+        Check if a region center matches a previously visited region.
+        Returns region_id if found, None otherwise.
+        """
+        if not self.simple_mode:
+            return None
+        
+        for region_id, region_data in self.visited_regions.items():
+            distance = np.linalg.norm(region_center - region_data['center'])
+            if distance < self.region_match_distance:
+                return region_id
+        
+        return None
+    
+    def mark_region_visited(self, region_center, utility):
+        """
+        Record a region visit and check if it should be marked as dead.
+        """
+        if not self.simple_mode:
+            return
+        
+        region_id = self.find_visited_region(region_center)
+        
+        if region_id is None:
+            # New region - create entry
+            region_id = len(self.visited_regions)
+            self.visited_regions[region_id] = {
+                'center': np.array(region_center),
+                'utility': utility,
+                'visit_count': 1
+            }
+            rospy.loginfo(f"[Dead Region] New region {region_id} at {region_center} with utility {utility:.3f}")
+        else:
+            # Existing region - update
+            region_data = self.visited_regions[region_id]
+            old_utility = region_data['utility']
+            utility_change = abs(utility - old_utility)
+            region_data['visit_count'] += 1
+            region_data['utility'] = utility
+            
+            rospy.loginfo(f"[Dead Region] Revisiting region {region_id}, visit #{region_data['visit_count']}, "
+                         f"utility: {old_utility:.3f} -> {utility:.3f} (change: {utility_change:.3f})")
+            
+            # Check if should be marked as dead
+            if region_data['visit_count'] >= self.dead_region_visit_threshold:
+                if utility_change < self.utility_change_threshold:
+                    if region_id not in self.dead_regions:
+                        self.dead_regions.add(region_id)
+                        rospy.logwarn(f"[Dead Region] Region {region_id} marked as DEAD after {region_data['visit_count']} visits "
+                                     f"with minimal utility change ({utility_change:.3f} < {self.utility_change_threshold})")
+                else:
+                    # Utility changed significantly - remove from dead set if it was there
+                    if region_id in self.dead_regions:
+                        self.dead_regions.remove(region_id)
+                        rospy.loginfo(f"[Dead Region] Region {region_id} removed from DEAD list due to utility change")
+    
+    def is_region_dead(self, region_center):
+        """
+        Check if a region is marked as dead.
+        """
+        if not self.simple_mode:
+            return False
+        
+        region_id = self.find_visited_region(region_center)
+        if region_id is None:
+            return False
+        
+        return region_id in self.dead_regions
+    
     def generate_viewpoints_simple(self, region_center, utility):
         """
         Generate viewpoints around a region center (similar to add_frontier_candidate)
@@ -434,7 +531,8 @@ class TopoTree:
             vp_y = region_center[1] + np.sin(angle[i]) * dist
             vp_z = region_center[2]
             
-            # Check bounds
+            # Check bounds - viewpoints must stay within original bounds (not extended)
+            # This ensures robot doesn't navigate outside safe area
             if (vp_x <= self.bounds[0][0] or vp_x >= self.bounds[0][1]) or \
                (vp_y <= self.bounds[1][0] or vp_y >= self.bounds[1][1]):
                 continue
@@ -691,6 +789,54 @@ class TopoTree:
             marker.color.g = 1.0
             marker.color.b = 0.0
             marker_array.markers.append(marker)
+            
+            # Visualize the region center for the selected viewpoint
+            if hasattr(self, 'ranked_viewpoints') and self.ranked_viewpoints and \
+               hasattr(self, 'current_viewpoint_rank') and self.current_viewpoint_rank < len(self.ranked_viewpoints):
+                selected_vp_data = self.ranked_viewpoints[self.current_viewpoint_rank]
+                if 'region_center' in selected_vp_data:
+                    region_center = selected_vp_data['region_center']
+                    
+                    # Region center marker
+                    region_marker = Marker()
+                    region_marker.header.frame_id = self.world_frame_id
+                    region_marker.header.stamp = rospy.Time.now()
+                    region_marker.ns = "simple_viewpoints"
+                    region_marker.id = 1000
+                    region_marker.type = Marker.SPHERE
+                    region_marker.action = Marker.ADD
+                    region_marker.pose.position.x = region_center[0]
+                    region_marker.pose.position.y = region_center[1]
+                    region_marker.pose.position.z = region_center[2]
+                    region_marker.pose.orientation.w = 1.0
+                    region_marker.scale.x = 0.2
+                    region_marker.scale.y = 0.2
+                    region_marker.scale.z = 0.2
+                    region_marker.color.a = 0.8
+                    region_marker.color.r = 1.0
+                    region_marker.color.g = 0.0
+                    region_marker.color.b = 1.0  # Magenta for region center
+                    marker_array.markers.append(region_marker)
+                    
+                    # Line connecting viewpoint to region center
+                    line_marker = Marker()
+                    line_marker.header.frame_id = self.world_frame_id
+                    line_marker.header.stamp = rospy.Time.now()
+                    line_marker.ns = "simple_viewpoints"
+                    line_marker.id = 1001
+                    line_marker.type = Marker.LINE_STRIP
+                    line_marker.action = Marker.ADD
+                    line_marker.scale.x = 0.05
+                    line_marker.color.a = 0.6
+                    line_marker.color.r = 1.0
+                    line_marker.color.g = 0.0
+                    line_marker.color.b = 1.0
+                    
+                    # Add points
+                    p1 = self.create_point(self.selected_viewpoint)
+                    p2 = self.create_point(region_center)
+                    line_marker.points = [p1, p2]
+                    marker_array.markers.append(line_marker)
         
         self.marker_pub.publish(marker_array)
 
@@ -791,9 +937,9 @@ class TopoTree:
         # self.print_graph()
         if self.graph.number_of_nodes() == 0:
             return
-        # check if point is inside boundary
-        if (point[0] >= self.bounds[0][1] or point[0] <= self.bounds[0][0]) or (
-            point[1] >= self.bounds[1][1] or point[1] <= self.bounds[1][0]
+        # check if point is inside boundary - use extended bounds for region centers
+        if (point[0] >= self.extended_bounds[0][1] or point[0] <= self.extended_bounds[0][0]) or (
+            point[1] >= self.extended_bounds[1][1] or point[1] <= self.extended_bounds[1][0]
         ):
             return
 
