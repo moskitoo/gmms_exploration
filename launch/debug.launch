@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- debug Launch File -->
+
+    <rosparam command="load" file="$(find gmms_exploration)/config/exploration_config.yaml" />
+    
+    <node name="sogmm_grid_node" pkg="gmms_exploration" type="sogmm_grid_node.py" output="screen"/>
+    
+</launch>
