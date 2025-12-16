@@ -196,6 +196,7 @@ include_directories(
 catkin_install_python(PROGRAMS
   src/sogmm_ros_node.py
   src/sogmm_exploration_node.py
+  src/sogmm_simple_exploration_node.py
   src/sogmm_grid_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
