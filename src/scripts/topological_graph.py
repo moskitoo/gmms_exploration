@@ -21,7 +21,7 @@ import tf2_ros
 
 
 class TopoTree:
-    def __init__(self):
+    def __init__(self, simple_mode: bool = False, exploration_distance_gain: float=0.1):
         # Initialize graph
         self.graph = nx.Graph()
         self.frontier_graph = nx.Graph()
@@ -34,18 +34,31 @@ class TopoTree:
         self.fov = np.radians(116.0)
         self.num_samples = 20
         self.budget = 50.0
+        self.min_viewpoint_distance = 0.01  # Minimum distance to select a viewpoint
         self.odom_id = 0
         self.graph_node_id = 0
         self.path = None
         self.prev_odom_pos = None
         self.prev_odom_yaw = None
         self.goal_node = None
+        self.simple_mode = simple_mode
+
+        rospy.logdebug(f"simple mode: {self.simple_mode}")
 
         # self.exploration_distance_gain = 0.2
-        self.exploration_distance_gain = 0.1
+        self.exploration_distance_gain = exploration_distance_gain
 
         self.latest_cost_benefit = {}
 
+        # Simple mode data structures
+        if self.simple_mode:
+            self.viewpoint_candidates = []  # List of (position, utility) tuples
+            self.selected_viewpoint = None
+            self.ranked_viewpoints = []  # Ranked list of viewpoints for fallback
+            self.current_viewpoint_rank = 0  # Track current viewpoint in ranked list
+            rospy.loginfo("TopoTree initialized in SIMPLE MODE")
+        else:
+            rospy.loginfo("TopoTree initialized in GRAPH MODE (RT-GuIDE)")
 
         self.bounds = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
 
@@ -114,6 +127,10 @@ class TopoTree:
                 transform.transform.rotation.w,
             ]
         ).as_matrix()
+
+        # Skip graph building in simple mode
+        if self.simple_mode:
+            return 0
 
         # Create a unique ID for this position
         self.node_id += 1
@@ -237,6 +254,98 @@ class TopoTree:
             if self.path is not None:
                 return self.path
             return None
+        
+        # Simple mode: direct viewpoint selection
+        if self.simple_mode:
+            return self.spin_simple_mode(point, utility, goal_tol, fail_pos_tol, fail_yaw_tol)
+        
+        # Graph mode: original RT-GuIDE approach
+        return self.spin_graph_mode(point, utility, goal_tol, fail_pos_tol, fail_yaw_tol)
+
+    def spin_simple_mode(self, point, utility, goal_tol=0.5, fail_pos_tol=0.1, fail_yaw_tol=0.1):
+        """
+        Simple mode: Select viewpoint based on direct distance-utility tradeoff
+        without graph traversal. Motion planner handles the path.
+        """
+        # Check if we should replan
+        if self.path is not None and self.selected_viewpoint is not None:
+            odom_np = self.odom_pos[:3]
+            goal_np = self.selected_viewpoint
+
+            if np.linalg.norm(odom_np - goal_np) >= goal_tol:
+                # Robot is far from goal, check if it's moving
+                if self.prev_odom_pos is not None:
+                    prev_pos = self.prev_odom_pos[:3]
+                    curr_pos = odom_np
+
+                    if (
+                        np.linalg.norm(prev_pos - curr_pos) >= fail_pos_tol
+                        or np.abs(self.odom_yaw - self.prev_odom_yaw) >= fail_yaw_tol
+                    ):
+                        # Robot is moving, keep current path
+                        self.prev_odom_pos = self.odom_pos
+                        self.prev_odom_yaw = self.odom_yaw
+                        return self.path
+
+        self.prev_odom_pos = self.odom_pos
+        self.prev_odom_yaw = self.odom_yaw
+
+        # Ensure utility positivity
+        min_utility = np.min(utility)
+        if min_utility < 0.0:
+            utility = utility - min_utility
+
+        # Clear old candidates and add new ones
+        self.viewpoint_candidates = []
+        
+        for i, p in enumerate(point):
+            # Check bounds
+            if (p[0] >= self.bounds[0][1] or p[0] <= self.bounds[0][0]) or (
+                p[1] >= self.bounds[1][1] or p[1] <= self.bounds[1][0]
+            ):
+                continue
+            
+            # Generate viewpoints around the region center
+            viewpoints = self.generate_viewpoints_simple(p, utility[i])
+            self.viewpoint_candidates.extend(viewpoints)
+
+        if not self.viewpoint_candidates:
+            rospy.logwarn("[Simple mode] No valid viewpoint candidates")
+            return None
+
+        # Get ranked list of top viewpoints (we'll store this for fallback selection)
+        self.ranked_viewpoints = self.get_ranked_viewpoints_simple(top_n=10)
+        
+        if not self.ranked_viewpoints:
+            rospy.logwarn(f"[Simple mode] No feasible viewpoints (min_dist={self.min_viewpoint_distance}m, budget={self.budget}m)")
+            # If no viewpoints found, robot might be at/very close to frontier - stay put
+            return None
+
+        # Select the best viewpoint
+        best_viewpoint = self.ranked_viewpoints[0]
+        self.selected_viewpoint = best_viewpoint['pos']
+        self.current_viewpoint_rank = 0  # Track which ranked viewpoint we're trying
+        
+        # Create simple path: [current_position, selected_viewpoint]
+        self.path = np.array([
+            self.odom_pos[:3],
+            self.selected_viewpoint
+        ])
+
+        # Publish visualization
+        self.publish_simple_markers()
+
+        rospy.loginfo(f"[Simple mode] Selected viewpoint (rank 1/{len(self.ranked_viewpoints)}): {self.selected_viewpoint}, "
+                      f"utility: {best_viewpoint['utility']:.3f}, "
+                      f"distance: {best_viewpoint['distance']:.3f}, "
+                      f"cost_benefit: {best_viewpoint['cost_benefit']:.3f}")
+
+        return self.path
+
+    def spin_graph_mode(self, point, utility, goal_tol=0.5, fail_pos_tol=0.1, fail_yaw_tol=0.1):
+        """
+        Original graph-based RT-GuIDE approach
+        """
         if self.graph.number_of_nodes() == 0:
             return None
         if self.path is not None:
@@ -309,6 +418,281 @@ class TopoTree:
             self.path[i, 1] = self.graph.nodes[x]["pos"][1]
             self.path[i, 2] = self.graph.nodes[x]["pos"][2]
         return self.path
+
+    def generate_viewpoints_simple(self, region_center, utility):
+        """
+        Generate viewpoints around a region center (similar to add_frontier_candidate)
+        but return as list instead of adding to graph.
+        """
+        viewpoints = []
+        
+        dist = self.shortest_visible_distance(region_center, self.fov)
+        angle = np.linspace(0, 2 * np.pi, self.num_samples)
+        
+        for i in range(self.num_samples):
+            vp_x = region_center[0] + np.cos(angle[i]) * dist
+            vp_y = region_center[1] + np.sin(angle[i]) * dist
+            vp_z = region_center[2]
+            
+            # Check bounds
+            if (vp_x <= self.bounds[0][0] or vp_x >= self.bounds[0][1]) or \
+               (vp_y <= self.bounds[1][0] or vp_y >= self.bounds[1][1]):
+                continue
+            
+            viewpoints.append({
+                'pos': np.array([vp_x, vp_y, vp_z]),
+                'utility': utility,
+                'region_center': region_center
+            })
+        
+        return viewpoints
+
+    def select_best_viewpoint_simple(self, exclude_positions=None):
+        """
+        Select best viewpoint based on distance-utility tradeoff.
+        
+        Args:
+            exclude_positions: List of positions to exclude from this selection
+            
+        Returns:
+            dict or None: Best viewpoint candidate, or None if none available
+        """
+        if not self.viewpoint_candidates:
+            return None
+        
+        if exclude_positions is None:
+            exclude_positions = []
+        
+        best_viewpoint = None
+        best_cost_benefit = -np.inf
+        
+        current_pos = self.odom_pos[:3]
+        
+        feasible_count = 0
+        for vp in self.viewpoint_candidates:
+            # Skip if this position is in the exclude list
+            is_excluded = False
+            for excluded_pos in exclude_positions:
+                if np.linalg.norm(vp['pos'] - excluded_pos) < 0.1:  # Small tolerance
+                    is_excluded = True
+                    break
+            
+            if is_excluded:
+                continue
+            
+            distance = np.linalg.norm(current_pos - vp['pos'])
+            
+            # Skip if beyond budget
+            if distance >= self.budget:
+                continue
+            
+            feasible_count += 1
+            
+            # Compute cost-benefit ratio
+            if distance > 0.0:
+                cost_benefit = vp['utility'] / np.exp(distance * self.exploration_distance_gain)
+            else:
+                cost_benefit = vp['utility']
+            
+            vp['distance'] = distance
+            vp['cost_benefit'] = cost_benefit
+            
+            if cost_benefit > best_cost_benefit:
+                best_cost_benefit = cost_benefit
+                best_viewpoint = vp
+        
+        if feasible_count == 0:
+            rospy.logdebug(f"[Simple mode] All {len(self.viewpoint_candidates)} candidates filtered out")
+        
+        return best_viewpoint
+
+    def get_ranked_viewpoints_simple(self, top_n=5):
+        """
+        Get top N viewpoints ranked by cost-benefit.
+        
+        Args:
+            top_n: Number of top viewpoints to return
+            
+        Returns:
+            list: Ranked list of viewpoint dictionaries
+        """
+        if not self.viewpoint_candidates:
+            return []
+        
+        current_pos = self.odom_pos[:3]
+        
+        # Calculate cost-benefit for all candidates
+        ranked_viewpoints = []
+        for vp in self.viewpoint_candidates:
+            distance = np.linalg.norm(current_pos - vp['pos'])
+            
+            # Skip if too close or beyond budget
+            if distance < self.min_viewpoint_distance:
+                continue
+            if distance >= self.budget:
+                continue
+            
+            # Compute cost-benefit ratio
+            if distance > 0.0:
+                cost_benefit = vp['utility'] / np.exp(distance * self.exploration_distance_gain)
+            else:
+                cost_benefit = vp['utility']
+            
+            # Create a copy with computed values
+            vp_copy = vp.copy()
+            vp_copy['distance'] = distance
+            vp_copy['cost_benefit'] = cost_benefit
+            ranked_viewpoints.append(vp_copy)
+        
+        # Sort by cost_benefit (descending)
+        ranked_viewpoints.sort(key=lambda x: x['cost_benefit'], reverse=True)
+        
+        return ranked_viewpoints[:top_n]
+
+    def select_next_best_viewpoint(self):
+        """
+        Select the next best viewpoint from the ranked list.
+        Called when the current viewpoint fails.
+        
+        Returns:
+            numpy array or None: Next viewpoint position, or None if no more alternatives
+        """
+        if not self.simple_mode:
+            rospy.logwarn("select_next_best_viewpoint only works in simple mode")
+            return None
+        
+        if not hasattr(self, 'ranked_viewpoints') or not self.ranked_viewpoints:
+            rospy.logwarn("[Simple mode] No ranked viewpoints available")
+            return None
+        
+        if not hasattr(self, 'current_viewpoint_rank'):
+            self.current_viewpoint_rank = 0
+        
+        # Move to next viewpoint in the ranked list
+        self.current_viewpoint_rank += 1
+        
+        if self.current_viewpoint_rank >= len(self.ranked_viewpoints):
+            rospy.logwarn(f"[Simple mode] Exhausted all {len(self.ranked_viewpoints)} viewpoint alternatives")
+            return None
+        
+        # Get next best viewpoint
+        next_viewpoint = self.ranked_viewpoints[self.current_viewpoint_rank]
+        self.selected_viewpoint = next_viewpoint['pos']
+        
+        # Create simple path: [current_position, selected_viewpoint]
+        self.path = np.array([
+            self.odom_pos[:3],
+            self.selected_viewpoint
+        ])
+        
+        # Publish updated visualization
+        self.publish_simple_markers()
+        
+        rospy.loginfo(f"[Simple mode] Selected alternative viewpoint (rank {self.current_viewpoint_rank + 1}/{len(self.ranked_viewpoints)}): "
+                      f"{self.selected_viewpoint}, "
+                      f"utility: {next_viewpoint['utility']:.3f}, "
+                      f"distance: {next_viewpoint['distance']:.3f}, "
+                      f"cost_benefit: {next_viewpoint['cost_benefit']:.3f}")
+        
+        return self.path
+
+    def publish_simple_markers(self):
+        """
+        Publish visualization markers for simple mode
+        """
+        if self.world_frame_id is None:
+            return
+        
+        marker_array = MarkerArray()
+        
+        # Delete old markers
+        marker = Marker()
+        marker.ns = "simple_viewpoints"
+        marker.header.frame_id = self.world_frame_id
+        marker.id = 0
+        marker.action = Marker.DELETEALL
+        marker_array.markers.append(marker)
+        
+        # Add bounds
+        bounds_marker = Marker()
+        bounds_marker.header.frame_id = self.world_frame_id
+        bounds_marker.header.stamp = rospy.Time.now()
+        bounds_marker.ns = "bounds"
+        bounds_marker.id = -1
+        bounds_marker.type = Marker.LINE_LIST
+        bounds_marker.action = Marker.ADD
+        bounds_marker.scale.x = 0.1
+        bounds_marker.color.a = 1.0
+        bounds_marker.color.r = 0.0
+        bounds_marker.color.g = 0.0
+        bounds_marker.color.b = 1.0
+
+        min_x, max_x = self.bounds[0]
+        min_y, max_y = self.bounds[1]
+        min_z, max_z = self.bounds[2]
+
+        p1 = self.create_point((min_x, min_y, min_z))
+        p2 = self.create_point((max_x, min_y, min_z))
+        p3 = self.create_point((max_x, max_y, min_z))
+        p4 = self.create_point((min_x, max_y, min_z))
+
+        p5 = self.create_point((min_x, min_y, max_z))
+        p6 = self.create_point((max_x, min_y, max_z))
+        p7 = self.create_point((max_x, max_y, max_z))
+        p8 = self.create_point((min_x, max_y, max_z))
+
+        bounds_marker.points = [
+            p1, p2, p2, p3, p3, p4, p4, p1,  # Bottom face
+            p5, p6, p6, p7, p7, p8, p8, p5,  # Top face
+            p1, p5, p2, p6, p3, p7, p4, p8,  # Vertical lines
+        ]
+        marker_array.markers.append(bounds_marker)
+        
+        # Visualize all candidates
+        for idx, vp in enumerate(self.viewpoint_candidates):
+            marker = Marker()
+            marker.header.frame_id = self.world_frame_id
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "simple_viewpoints"
+            marker.id = idx + 1
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = vp['pos'][0]
+            marker.pose.position.y = vp['pos'][1]
+            marker.pose.position.z = vp['pos'][2]
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.1
+            marker.scale.y = 0.1
+            marker.scale.z = 0.1
+            marker.color.a = 0.5
+            marker.color.r = 1.0
+            marker.color.g = 0.5
+            marker.color.b = 0.0
+            marker_array.markers.append(marker)
+        
+        # Highlight selected viewpoint
+        if self.selected_viewpoint is not None:
+            marker = Marker()
+            marker.header.frame_id = self.world_frame_id
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "simple_viewpoints"
+            marker.id = 999
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = self.selected_viewpoint[0]
+            marker.pose.position.y = self.selected_viewpoint[1]
+            marker.pose.position.z = self.selected_viewpoint[2]
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.3
+            marker.scale.y = 0.3
+            marker.scale.z = 0.3
+            marker.color.a = 1.0
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.0
+            marker_array.markers.append(marker)
+        
+        self.marker_pub.publish(marker_array)
 
     def cost(self, i, j):
         return np.linalg.norm(

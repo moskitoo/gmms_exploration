@@ -22,7 +22,7 @@ from scripts.topological_graph import TopoTree
 class SOGMMExplorationNode:
     def __init__(self):
         # Initialize ROS node
-        rospy.init_node("sogmm_exploration_node", anonymous=True)
+        rospy.init_node("sogmm_exploration_node", anonymous=False)
 
         # Set logging level based on parameter
         log_level = rospy.get_param("~log_level", "INFO").upper()
@@ -33,7 +33,11 @@ class SOGMMExplorationNode:
 
         self.reached_target = True
 
-        self.topo_tree = TopoTree()
+        self.simple_mode = rospy.get_param('/simple_exploration', False)
+
+        self.exploration_distance_gain = rospy.get_param('~exploration_distance_gain', 0.1)
+
+        self.topo_tree = TopoTree(simple_mode=self.simple_mode, exploration_distance_gain=self.exploration_distance_gain)
 
         self.fly_trajectory_client = rospy.ServiceProxy("/starling1/fly_trajectory", FlyTrajectory)
         self.get_viewpoint_client = rospy.ServiceProxy("get_viewpoint", GetViewpoint)
@@ -58,33 +62,23 @@ class SOGMMExplorationNode:
         self.fail_yaw_tol_ = rospy.get_param('~fail_yaw_tol', 0.1)
 
         self.path_to_ftr = None
+        self.consecutive_failures = 0  # Track consecutive trajectory failures for current viewpoint
+        self.max_retries_per_viewpoint = 2  # Number of times to retry same viewpoint
+        self.viewpoint_attempt_count = 0  # Track attempts on current viewpoint
 
     def execute_exploration(self):
-
-        # # Dynamic adjustment of goal_waypoint_id based on graph size
-        # if hasattr(self.topo_tree, 'graph'):
-        #     try:
-        #         # Count odometry nodes (predicted=False)
-        #         num_odom_nodes = sum(1 for _, data in self.topo_tree.graph.nodes(data=True) if not data.get('predicted', True))
-                
-        #         # Increase lookahead as graph grows
-        #         # Base: 6, +1 per n nodes, max 30
-        #         n_nodes = 5
-        #         self.goal_waypoint_id = 6 + int(num_odom_nodes / n_nodes)
-        #         self.goal_waypoint_id = min(self.goal_waypoint_id, 30)
-        #         rospy.logdebug_throttle(n_nodes, f"-----> Odom nodes: {num_odom_nodes}, goal_waypoint_id: {self.goal_waypoint_id}")
-        #     except RuntimeError:
-        #         # Graph changed during iteration, skip update this time
-        #         pass
-
         if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr) and  self.current_waypoint_index >= 0:
 
             if not hasattr(self, 'robot_position'):
                 rospy.logwarn_throttle(1.0, "Waiting for robot position...")
                 return
 
-            # Select the nth next goal on the path
-            target_index = min(self.current_waypoint_index + self.goal_waypoint_id, len(self.path_to_ftr) - 1)
+            # In simple mode, path has only 2 points: [current, goal]
+            if self.simple_mode:
+                target_index = len(self.path_to_ftr) - 1  # Always target the last point
+            else:
+                # Graph mode: select the nth next goal on the path
+                target_index = min(self.current_waypoint_index + self.goal_waypoint_id, len(self.path_to_ftr) - 1)
             
             next_waypoint = self.path_to_ftr[target_index]
             
@@ -93,20 +87,31 @@ class SOGMMExplorationNode:
             dy = next_waypoint[1] - self.robot_position.y
             dz = next_waypoint[2] - self.robot_position.z
             distance_to_goal = np.sqrt(dx**2 + dy**2 + dz**2)
-
-            # If the selected goal is too close, try to find the next one that is far enough
-            while distance_to_goal <= 0.1:
-                target_index += 1
-                if target_index >= len(self.path_to_ftr):
+            
+            # Check if already at goal (for both simple and graph mode)
+            if distance_to_goal <= 0.3:  # Consider reached if within 30cm
+                rospy.loginfo(f"Already at waypoint {target_index + 1}/{len(self.path_to_ftr)} (distance: {distance_to_goal:.3f}m)")
+                self.current_waypoint_index = target_index + 1
+                self.viewpoint_attempt_count = 0
+                if self.current_waypoint_index >= len(self.path_to_ftr):
                     rospy.loginfo("Completed path.")
-                    self.path_to_ftr = None # Clear path after completion
-                    return
-                
-                next_waypoint = self.path_to_ftr[target_index]
-                dx = next_waypoint[0] - self.robot_position.x
-                dy = next_waypoint[1] - self.robot_position.y
-                dz = next_waypoint[2] - self.robot_position.z
-                distance_to_goal = np.sqrt(dx**2 + dy**2 + dz**2)
+                    self.path_to_ftr = None
+                return
+
+            # In graph mode, skip waypoints that are too close
+            if not self.simple_mode:
+                while distance_to_goal <= 0.1:
+                    target_index += 1
+                    if target_index >= len(self.path_to_ftr):
+                        rospy.loginfo("Completed path.")
+                        self.path_to_ftr = None
+                        return
+                    
+                    next_waypoint = self.path_to_ftr[target_index]
+                    dx = next_waypoint[0] - self.robot_position.x
+                    dy = next_waypoint[1] - self.robot_position.y
+                    dz = next_waypoint[2] - self.robot_position.z
+                    distance_to_goal = np.sqrt(dx**2 + dy**2 + dz**2)
 
             self.viewpoint = Point()
             self.viewpoint.x = next_waypoint[0]
@@ -116,7 +121,6 @@ class SOGMMExplorationNode:
             rospy.loginfo(f"Sending waypoint {target_index + 1}/{len(self.path_to_ftr)}: {self.viewpoint}")
 
             self.viewpoint_marker_pub.publish(self.create_viewpoint_marker(self.viewpoint))
-
 
             # Pass the extracted Point object to the fly service
             try:
@@ -129,20 +133,52 @@ class SOGMMExplorationNode:
 
             if self.reached_target:
                 self.current_waypoint_index = target_index + 1
+                self.consecutive_failures = 0
+                self.viewpoint_attempt_count = 0  # Reset for next viewpoint
                 
                 if self.current_waypoint_index >= len(self.path_to_ftr):
                     rospy.loginfo("Completed path.")
-                    self.path_to_ftr = None # Clear path after completion
+                    self.path_to_ftr = None
             else:
-                rospy.logwarn("Trajectory service failed. Trying closer waypoint.")
-                # self.path_to_ftr = None
-                self.current_waypoint_index = target_index - 1
+                self.consecutive_failures += 1
+                self.viewpoint_attempt_count += 1
+                rospy.logwarn(f"Trajectory failed. Attempt {self.viewpoint_attempt_count} for this viewpoint.")
+                
+                if self.simple_mode:
+                    # In simple mode, try alternative viewpoints
+                    if self.viewpoint_attempt_count >= self.max_retries_per_viewpoint:
+                        rospy.logwarn(f"Viewpoint failed after {self.viewpoint_attempt_count} attempts. Trying alternative...")
+                        
+                        # Try to select next best viewpoint
+                        alternative_path = self.topo_tree.select_next_best_viewpoint()
+                        
+                        if alternative_path is not None:
+                            self.path_to_ftr = alternative_path
+                            self.current_waypoint_index = 0
+                            self.viewpoint_attempt_count = 0  # Reset for new viewpoint
+                            path_marker = self.create_path_marker(self.path_to_ftr)
+                            self.path_marker_pub.publish(path_marker)
+                            rospy.loginfo("Switched to alternative viewpoint")
+                        else:
+                            # No more alternatives, wait for next grid callback to replan
+                            rospy.logwarn("No more alternative viewpoints. Waiting for new planning cycle...")
+                            self.path_to_ftr = None
+                            self.consecutive_failures = 0
+                            self.viewpoint_attempt_count = 0
+                    # else: retry same viewpoint on next iteration
+                else:
+                    # Graph mode: try closer waypoint
+                    self.current_waypoint_index = max(0, target_index - 1)
         else:
-            rospy.loginfo("No active path to follow. Waiting for new path.")
-            # Optionally, you can add logic here to request a new plan if idle.
-            rospy.sleep(1.0) # Wait before checking again
+            rospy.loginfo_throttle(5.0, "No active path to follow. Waiting for new path.")
+            rospy.sleep(1.0)
     
     def grid_callback(self, msg):
+        # Don't replan if actively executing a path (unless we've failed multiple times)
+        if self.path_to_ftr is not None and self.viewpoint_attempt_count < self.max_retries_per_viewpoint:
+            rospy.logdebug("Path execution in progress, skipping replan")
+            return
+        
         means = msg.means.data
         uncertainties = msg.uncertainties.data
 
@@ -163,6 +199,7 @@ class SOGMMExplorationNode:
             rospy.logdebug("New path received, reset and store it")
             self.path_to_ftr = path
             self.current_waypoint_index = 0
+            self.viewpoint_attempt_count = 0  # Reset attempt counter for new path
             self.reached_target = True # Trigger execution of the new path
             # rospy.logdebug(f"path to ftr: {self.path_to_ftr}")
             path_marker = self.create_path_marker(self.path_to_ftr)
