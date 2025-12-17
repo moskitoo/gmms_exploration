@@ -388,27 +388,6 @@ class TopoTree:
         marker_array_msg.markers.append(marker)
         self.marker_pub.publish(marker_array_msg)
 
-        #add map bounds
-        bounds_marker = Marker()
-        bounds_marker.header.frame_id = self.world_frame_id
-        bounds_marker.header.stamp = rospy.Time.now()
-        bounds_marker.ns = "bounds"
-        bounds_marker.id = -1
-        bounds_marker.type = Marker.LINE_STRIP
-        bounds_marker.action = Marker.ADD
-        bounds_marker.scale.x = 0.1
-        bounds_marker.color.a = 1.0
-        bounds_marker.color.r = 0.0
-        bounds_marker.color.g = 0.0
-        bounds_marker.color.b = 1.0
-
-        p1 = self.create_point((self.bounds[0][0], self.bounds[1][0], self.bounds[0][2]))
-        p2 = self.create_point((self.bounds[0][1], self.bounds[1][0], self.bounds[0][2]))
-        p3 = self.create_point((self.bounds[0][1], self.bounds[1][1], self.bounds[1][2]))
-        p4 = self.create_point((self.bounds[0][0], self.bounds[1][1], self.bounds[1][2]))
-        bounds_marker.points = [p1, p2, p3, p4, p1]
-        marker_array.markers.append(bounds_marker)
-
         # Add nodes as spheres
         for node, data in self.graph.nodes(data=True):
             try:

@@ -376,6 +376,60 @@ class ExplorationGrid:
 
         return marker_array
 
+    def create_point(self, coords):
+        """Helper method to create a Point from coordinates tuple"""
+        p = Point()
+        p.x = coords[0]
+        p.y = coords[1]
+        p.z = coords[2]
+        return p
+
+    def get_bounds_vis(self, frame_id="map", timestamp=None):
+        """
+        Generates a MarkerArray for visualizing the map bounds as a wireframe box.
+        """
+        if timestamp is None:
+            timestamp = rospy.Time.now()
+
+        marker_array = MarkerArray()
+
+        # Add bounds marker
+        bounds_marker = Marker()
+        bounds_marker.header.frame_id = frame_id
+        bounds_marker.header.stamp = timestamp
+        bounds_marker.ns = "bounds"
+        bounds_marker.id = 0
+        bounds_marker.type = Marker.LINE_LIST
+        bounds_marker.action = Marker.ADD
+        bounds_marker.scale.x = 0.1
+        bounds_marker.color.a = 1.0
+        bounds_marker.color.r = 0.0
+        bounds_marker.color.g = 0.0
+        bounds_marker.color.b = 1.0
+
+        min_x, max_x = self.map_bounds[0]
+        min_y, max_y = self.map_bounds[1]
+        min_z, max_z = self.map_bounds[2]
+
+        p1 = self.create_point((min_x, min_y, min_z))
+        p2 = self.create_point((max_x, min_y, min_z))
+        p3 = self.create_point((max_x, max_y, min_z))
+        p4 = self.create_point((min_x, max_y, min_z))
+
+        p5 = self.create_point((min_x, min_y, max_z))
+        p6 = self.create_point((max_x, min_y, max_z))
+        p7 = self.create_point((max_x, max_y, max_z))
+        p8 = self.create_point((min_x, max_y, max_z))
+
+        bounds_marker.points = [
+            p1, p2, p2, p3, p3, p4, p4, p1,  # Bottom face
+            p5, p6, p6, p7, p7, p8, p8, p5,  # Top face
+            p1, p5, p2, p6, p3, p7, p4, p8,  # Vertical lines
+        ]
+        marker_array.markers.append(bounds_marker)
+
+        return marker_array
+
     def compose_grid_msg(self):
         msg = Grid()
 
@@ -443,6 +497,15 @@ class SOGMMGridNode:
 
         self.grid_pub = rospy.Publisher(
             "/starling1/mpa/grid", Grid, queue_size=1
+        )
+
+        self.bounds_marker_pub = rospy.Publisher(
+            "/starling1/mpa/bounds_markers", MarkerArray, queue_size=1, latch=True
+        )
+
+        # Publish bounds visualization once at startup
+        self.bounds_marker_pub.publish(
+            self.exploration_grid.get_bounds_vis("map")
         )
 
         self.reached_target = True
