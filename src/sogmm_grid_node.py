@@ -27,7 +27,9 @@ class ExplorationGrid:
         static_cluster_center: bool = False,
         map_bounds: List[Tuple] = [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)],
         unexplored_uncertainty: float = 1.0,
-        grid_offset = 0.5
+        grid_offset = 0.5,
+        filter_z_position=False,
+        filter_grad_mean=True,
     ):
         self.grid_cell_size = grid_cell_size
 
@@ -38,6 +40,11 @@ class ExplorationGrid:
         
         self.static_cluster_center = static_cluster_center
         self.unexplored_uncertainty = unexplored_uncertainty
+
+        self.filter_z_pos = filter_z_position
+        self.filter_grad_mean = filter_grad_mean
+
+        self.grid_offset = grid_offset
         
         self.map_bounds = map_bounds
         self.map_bounds = [
@@ -92,16 +99,16 @@ class ExplorationGrid:
         if self.static_cluster_center:
             # Don't reset - grid persists values from previous iterations
             # Only updated cells will change based on new measurements
-            self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True, nms_filter=False)
+            self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, nms_filter=False)
         else:
-            self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True, nms_filter=False)
+            self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, nms_filter=False)
         # self.cluster_centroids_not_filtered, self.average_gradient_magnitudes_not_filtered = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
 
         # rospy.logdebug(f"centroid number         : {self.cluster_centroids_not_filtered.shape}\n")
         rospy.logdebug(f"centroids shape: {self.cluster_centroids.shape}")
 
 
-    def get_gaussian_frontiers(self, means, uncertainties, cluster_size=0.1, nms_radius=1.5, filter_grad_mean=False, nms_filter=False):
+    def get_gaussian_frontiers(self, means, uncertainties, cluster_size=0.1, nms_radius=1.5, nms_filter=False):
 
         # cluster size
         inverse_cluster_size = 1.0 / cluster_size
@@ -153,7 +160,7 @@ class ExplorationGrid:
         if self.static_cluster_center:
             # Update the pre-initialized grid with new gradient values
             # Apply gradient filtering if needed
-            if filter_grad_mean:
+            if self.filter_grad_mean:
                 avg_grad = np.mean(mean_grads)
                 ths_grad = avg_grad
                 grads_mask = (mean_grads > ths_grad).flatten()
@@ -187,12 +194,18 @@ class ExplorationGrid:
             return None, None
         
         # For dynamic mode, apply filtering after computing cluster centroids
-        if filter_grad_mean:
+        if self.filter_grad_mean:
             avg_grad = np.mean(mean_grads)
             ths_grad = avg_grad
             grads_mask = (mean_grads > ths_grad).flatten()
             mean_positions = mean_positions[grads_mask]
             mean_grads = mean_grads[grads_mask]
+
+        if self.filter_z_pos:
+            position_mask = ((mean_positions[:,2] >= self.map_bounds[2][0]) & 
+                            (mean_positions[:,2] <= self.map_bounds[2][1])).flatten()
+            mean_positions = mean_positions[position_mask]
+            mean_grads = mean_grads[position_mask]
 
         cluster_centroids = mean_positions
 
@@ -395,6 +408,8 @@ class SOGMMGridNode:
         self.grid_cell_size = rospy.get_param("~grid_cell_size", 1.0)
         self.unexplored_uncertainty = rospy.get_param("~unexplored_uncertainty", 1.0)
         self.grid_offset = rospy.get_param("~grid_offset", 0.5)
+        self.filter_z_position = rospy.get_param("~filter_z_position", False)
+        self.filter_grad_mean = rospy.get_param("~filter_grad_mean", True)
 
         rospy.logdebug(f"self.grid_marker_scale: {self.grid_marker_scale}")
 
@@ -403,7 +418,9 @@ class SOGMMGridNode:
             static_cluster_center=self.static_cluster_center, 
             map_bounds=self.map_bounds, 
             unexplored_uncertainty=self.unexplored_uncertainty,
-            grid_offset=self.grid_offset
+            grid_offset=self.grid_offset,
+            filter_z_position=self.filter_z_position,
+            filter_grad_mean=self.filter_grad_mean
         )
 
         # Subscribers
