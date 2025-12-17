@@ -623,6 +623,9 @@ class SOGMMROSNode:
         self.freeze_interval_frames = rospy.get_param("~freeze_interval_frames", 5)
         self.freeze_fusion_threshold = rospy.get_param("~freeze_fusion_threshold", 20)
 
+        self.publish_whole_gmm = rospy.get_param("~publish_whole_gmm", False)
+        self.gmm_publish_rate = rospy.get_param("~gmm_publish_rate", 10.0)  # Hz
+
         self.fusion_weight_update = rospy.get_param("~fusion_weight_update", False)
 
     def _setup_communication(self):
@@ -693,6 +696,17 @@ class SOGMMROSNode:
         self.last_prune_time = rospy.Time.now().to_sec()
 
         self.max_uct_id = 0
+        
+        # Track updated indices for publishing
+        self.updated_indices_lock = threading.Lock()
+        self.latest_updated_indices = []
+        
+        # Setup GMM publishing timer
+        if self.gmm_publish_rate > 0:
+            self.gmm_publish_timer = rospy.Timer(
+                rospy.Duration(1.0 / self.gmm_publish_rate),
+                self.gmm_publish_timer_callback
+            )
 
     def _log_initialization(self):
         """Log initialization parameters for debugging."""
@@ -803,12 +817,14 @@ class SOGMMROSNode:
             processing_time = proc_timestamp - gira_timestamp
 
             # Visualize results - only if we have a model
+            # Store updated indices for periodic publishing
+            with self.updated_indices_lock:
+                self.latest_updated_indices = updated_indices
+
             viz_start_time = time.time()
             if self.enable_visualization and self.master_gmm.model.n_components_ > 0:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp, updated_indices)
             viz_time = time.time() - viz_start_time
-
-            self.publish_gmm(local_model_cpu)
 
             full_processing_time = time.time() - start_time
             n_components = self.master_gmm.model.n_components_
@@ -824,13 +840,26 @@ class SOGMMROSNode:
         except Exception as e:
             rospy.logerr(f"Error processing point cloud: {e}\n{traceback.format_exc()}")
 
-    def publish_gmm(self, local_model_cpu):
+    def gmm_publish_timer_callback(self, event):
+        """Timer callback to periodically publish the latest GMM."""
+        if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
+            return
+        
+        # Get the latest updated indices
+        with self.updated_indices_lock:
+            updated_indices = self.latest_updated_indices.copy()
+        
+        self.publish_gmm(updated_indices)
+    
+    def publish_gmm(self, updated_indices):
+        """Publish the current state of the master GMM."""
+        if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
+            return
+        
         gmm_msg = GaussianMixtureModel()
 
-        updated_indices = self.master_gmm.find_spatial_candidates(local_model_cpu)
-
         for idx in range(self.master_gmm.model.n_components_):
-            if idx in updated_indices:
+            if idx in updated_indices or self.publish_whole_gmm:
                 gaussian_component = GaussianComponent()
                 # use the first 3 dimensions of the mean (x,y,z)
                 gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
@@ -843,9 +872,11 @@ class SOGMMROSNode:
                 gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
                 gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
                 gmm_msg.components.append(gaussian_component)
-            
-        # gmm_msg.n_components = self.master_gmm.model.n_components_
-        gmm_msg.n_components = len(updated_indices)
+        
+        if self.publish_whole_gmm:
+            gmm_msg.n_components = self.master_gmm.model.n_components_
+        else:
+            gmm_msg.n_components = len(updated_indices)
 
         self.gmm_pub.publish(gmm_msg)
 
