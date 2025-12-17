@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from typing import Tuple
+from typing import Tuple, List
 
 import matplotlib.cm as cm
 import numpy as np
@@ -57,7 +57,53 @@ class SOGMMExplorationNode:
         self.fail_pos_tol_ = rospy.get_param('~fail_pos_tol', 0.1)
         self.fail_yaw_tol_ = rospy.get_param('~fail_yaw_tol', 0.1)
 
+        self.clip_z: bool = rospy.get_param('~clip_z', default=True)
+        
+        # Blacklist for obstacle waypoints
+        self.blacklisted_waypoints = []  # List of (x, y, z) tuples
+        self.obstacle_blacklist_radius = rospy.get_param('~obstacle_blacklist_radius', 1.0)
+
         self.path_to_ftr = None
+
+    def is_waypoint_blacklisted(self, waypoint):
+        """
+        Check if a waypoint is within the blacklist radius of any blacklisted point.
+        
+        Args:
+            waypoint: tuple or Point with (x, y, z) coordinates
+        
+        Returns:
+            bool: True if waypoint is blacklisted, False otherwise
+        """
+        if isinstance(waypoint, Point):
+            wp_pos = np.array([waypoint.x, waypoint.y, waypoint.z])
+        else:
+            wp_pos = np.array(waypoint[:3])
+        
+        for blacklisted_pos in self.blacklisted_waypoints:
+            distance = np.linalg.norm(wp_pos - np.array(blacklisted_pos))
+            if distance <= self.obstacle_blacklist_radius:
+                return True
+        return False
+    
+    def blacklist_waypoint(self, waypoint):
+        """
+        Add a waypoint to the blacklist and notify the topological graph.
+        
+        Args:
+            waypoint: tuple or Point with (x, y, z) coordinates
+        """
+        if isinstance(waypoint, Point):
+            pos = (waypoint.x, waypoint.y, waypoint.z)
+        else:
+            pos = tuple(waypoint[:3])
+        
+        if pos not in self.blacklisted_waypoints:
+            self.blacklisted_waypoints.append(pos)
+            rospy.logwarn(f"Blacklisted waypoint at ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}) with radius {self.obstacle_blacklist_radius:.2f}m")
+            
+            # Zero out utilities for frontier nodes in the blacklisted area
+            self.topo_tree.blacklist_region(pos, self.obstacle_blacklist_radius)
 
     def execute_exploration(self):
 
@@ -88,6 +134,15 @@ class SOGMMExplorationNode:
             
             next_waypoint = self.path_to_ftr[target_index]
             
+            # Skip blacklisted waypoints
+            if self.is_waypoint_blacklisted(next_waypoint):
+                rospy.logwarn(f"Waypoint {target_index + 1} is blacklisted (in obstacle area). Skipping...")
+                self.current_waypoint_index = target_index + 1
+                if self.current_waypoint_index >= len(self.path_to_ftr):
+                    rospy.logwarn("All waypoints exhausted or blacklisted. Requesting new path.")
+                    self.path_to_ftr = None
+                return
+            
             rospy.loginfo(f"robot current position: {self.robot_position}")
             dx = next_waypoint[0] - self.robot_position.x
             dy = next_waypoint[1] - self.robot_position.y
@@ -111,7 +166,15 @@ class SOGMMExplorationNode:
             self.viewpoint = Point()
             self.viewpoint.x = next_waypoint[0]
             self.viewpoint.y = next_waypoint[1]
-            self.viewpoint.z = next_waypoint[2]
+
+            # Clamp z to map bounds
+            if self.clip_z:
+                map_bounds: List[Tuple[float]] = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
+                z_min, z_max = map_bounds[2]
+
+                self.viewpoint.z = np.clip(next_waypoint[2], z_min, z_max)
+            else:
+                self.viewpoint.z = next_waypoint[2]
 
             rospy.loginfo(f"Sending waypoint {target_index + 1}/{len(self.path_to_ftr)}: {self.viewpoint}")
 
@@ -122,7 +185,20 @@ class SOGMMExplorationNode:
             try:
                 response = self.fly_trajectory_client(self.viewpoint, False)
                 self.reached_target = response.success
-                rospy.loginfo(f"Reached target (success): {self.reached_target}")
+                rospy.loginfo(f"Reached target (success): {self.reached_target}, response_id: {response.response_id}")
+                
+                # Handle goal-in-obstacle response (response_id == 3: STOP_IN_OBS)
+                if response.response_id == 3:
+                    rospy.logerr(f"Goal waypoint is in obstacle! Blacklisting waypoint and nearby area.")
+                    
+                    # Blacklist this waypoint and nearby area
+                    self.blacklist_waypoint(self.viewpoint)
+                    
+                    # Clear the current path to trigger replanning
+                    self.path_to_ftr = None
+                    rospy.logwarn("Path cleared. Will request new path avoiding obstacle area.")
+                    return
+                    
             except rospy.ServiceException as e:
                 rospy.logerr(f"Service call failed: {e}")
                 self.reached_target = False

@@ -312,6 +312,29 @@ class TopoTree:
                 
                 if dist < 4.0:
                     data['utility'] = 0.
+    
+    def blacklist_region(self, center_position, radius):
+        """
+        Zero out utilities for all frontier nodes within a specified radius of a center position.
+        This is used to mark obstacle areas as undesirable for exploration.
+        
+        Args:
+            center_position: tuple (x, y, z) - center of the blacklisted region
+            radius: float - radius of the blacklisted region in meters
+        """
+        center_np = np.array(center_position[:3])
+        nodes_affected = 0
+        
+        for node, data in self.graph.nodes(data=True):
+            if data['predicted']:  # Only affect frontier (predicted) nodes
+                node_pos = np.array(data['pos'])
+                dist = np.linalg.norm(node_pos - center_np)
+                
+                if dist <= radius:
+                    data['utility'] = 0.0
+                    nodes_affected += 1
+        
+        rospy.loginfo(f"Blacklisted {nodes_affected} frontier nodes within {radius:.2f}m of ({center_position[0]:.2f}, {center_position[1]:.2f}, {center_position[2]:.2f})")
 
 
     def print_graph(self):
