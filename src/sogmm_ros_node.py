@@ -63,7 +63,7 @@ class MasterGMM:
         Returns:
             list: Indices of components in the master model that were updated or added.
         """
-        n_incoming = len(gmm_measurement.weights_)
+        n_incoming: int = len(gmm_measurement.weights_)
         rospy.loginfo(f"Processing {n_incoming} incoming Gaussians")
 
         # Handle empty master GMM - initialize with first measurement
@@ -115,8 +115,8 @@ class MasterGMM:
     def find_spatial_candidates(self, gmm_measurement):
         """Find master components spatially overlapping with measurement."""
         # Get bounding box of incoming measurement
-        min_bounds = gmm_measurement.means_[:, :3].min(axis=0)
-        max_bounds = gmm_measurement.means_[:, :3].max(axis=0)
+        min_bounds: float = gmm_measurement.means_[:, :3].min(axis=0)
+        max_bounds: float = gmm_measurement.means_[:, :3].max(axis=0)
 
         # Query R-tree for overlapping components
         return list(self.rtree.intersection((*min_bounds, *max_bounds)))
@@ -357,7 +357,7 @@ class MasterGMM:
         np.add.at(self.model.fusion_counts_, master_indices, 1)
 
         # Update displacements (store the last displacement for each master component)
-        displacements = np.linalg.norm(mu_new[:, :3] - mu_i[:, :3], axis=1)
+        displacements = np.linalg.norm(x=mu_new[:, :3] - mu_i[:, :3], axis=1)
         self.model.last_displacements_[master_indices] = displacements
 
         self.model.uncertainty_[master_indices] = self._calculate_uncertainty(
@@ -623,7 +623,6 @@ class SOGMMROSNode:
         self.freeze_interval_frames = rospy.get_param("~freeze_interval_frames", 5)
         self.freeze_fusion_threshold = rospy.get_param("~freeze_fusion_threshold", 20)
 
-        self.publish_whole_gmm = rospy.get_param("~publish_whole_gmm", False)
         self.gmm_publish_rate = rospy.get_param("~gmm_publish_rate", 10.0)  # Hz
 
         self.fusion_weight_update = rospy.get_param("~fusion_weight_update", False)
@@ -641,8 +640,11 @@ class SOGMMROSNode:
             "/starling1/mpa/gmm_size", Int32, queue_size=1
         )
 
-        self.gmm_pub = rospy.Publisher(
+        self.gmm_full_pub = rospy.Publisher(
             "/starling1/mpa/gmm", GaussianMixtureModel, queue_size=1
+        )
+        self.gmm_updated_pub = rospy.Publisher(
+            "/starling1/mpa/gmm_updated", GaussianMixtureModel, queue_size=1
         )
 
         # Subscribers
@@ -842,6 +844,10 @@ class SOGMMROSNode:
 
     def gmm_publish_timer_callback(self, event):
         """Timer callback to periodically publish the latest GMM."""
+        print("=======================================================")
+        print(f"model is none: {self.master_gmm.model is None}")
+        print(f"n_componensts: {self.master_gmm.model.n_components_}")
+        print("=======================================================")
         if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
             return
         
@@ -849,36 +855,64 @@ class SOGMMROSNode:
         with self.updated_indices_lock:
             updated_indices = self.latest_updated_indices.copy()
         
-        self.publish_gmm(updated_indices)
+        # Publish both full and updated GMMs
+        self.publish_full_gmm()
+        self.publish_updated_gmm(updated_indices)
     
-    def publish_gmm(self, updated_indices):
-        """Publish the current state of the master GMM."""
+    def publish_full_gmm(self):
+        """Publish the complete master GMM."""
+        print("published gmm")
         if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
             return
         
         gmm_msg = GaussianMixtureModel()
+        gmm_msg.n_components = self.master_gmm.model.n_components_
 
         for idx in range(self.master_gmm.model.n_components_):
-            if idx in updated_indices or self.publish_whole_gmm:
-                gaussian_component = GaussianComponent()
-                # use the first 3 dimensions of the mean (x,y,z)
-                gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
-                # extract the 4x4 covariance for this component and take the 3x3 spatial part
-                cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
-                gaussian_component.covariance = cov3.flatten().tolist()
-                gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
-                gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
-                gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
-                gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
-                gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
-                gmm_msg.components.append(gaussian_component)
-        
-        if self.publish_whole_gmm:
-            gmm_msg.n_components = self.master_gmm.model.n_components_
-        else:
-            gmm_msg.n_components = len(updated_indices)
+            gaussian_component = GaussianComponent()
+            # use the first 3 dimensions of the mean (x,y,z)
+            gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
+            # extract the 4x4 covariance for this component and take the 3x3 spatial part
+            cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
+            gaussian_component.covariance = cov3.flatten().tolist()
+            gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
+            gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
+            gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
+            gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
+            gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
+            gmm_msg.components.append(gaussian_component)
 
-        self.gmm_pub.publish(gmm_msg)
+        self.gmm_full_pub.publish(gmm_msg)
+        print("published gmm")
+    
+    def publish_updated_gmm(self, updated_indices):
+        """Publish only the updated components of the master GMM."""
+        print("published updated gmm")
+        if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
+            return
+        
+        if not updated_indices:
+            return
+        
+        gmm_msg = GaussianMixtureModel()
+        gmm_msg.n_components = len(updated_indices)
+
+        for idx in updated_indices:
+            gaussian_component = GaussianComponent()
+            # use the first 3 dimensions of the mean (x,y,z)
+            gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
+            # extract the 4x4 covariance for this component and take the 3x3 spatial part
+            cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
+            gaussian_component.covariance = cov3.flatten().tolist()
+            gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
+            gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
+            gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
+            gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
+            gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
+            gmm_msg.components.append(gaussian_component)
+
+        self.gmm_updated_pub.publish(gmm_msg)
+        print("published updated gmm")
 
     def transform_point_cloud(self, msg, points_3d_original, target_frame):
         try:

@@ -8,3 +8,4 @@ bool use_default_goal            # Set true to use default goal from params
 # Response:
 bool success                    # True if mission completed successfully
 string message                  # Status or error message
+int32 response_id               # Response code from trajectory planner (SUCCESS=0, TIMEOUT=1, START_IN_OBS=2, STOP_IN_OBS=3, FAILURE=-2)

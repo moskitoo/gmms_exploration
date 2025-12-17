@@ -193,6 +193,7 @@ class ExplorationGrid:
             # Don't return anything, grid is updated in place
             return None, None
         
+        rospy.logdebug(f"mean_positions: {mean_positions}")
         # For dynamic mode, apply filtering after computing cluster centroids
         if self.filter_grad_mean:
             avg_grad = np.mean(mean_grads)
@@ -211,7 +212,6 @@ class ExplorationGrid:
 
         average_gradient_magnitudes = mean_grads.flatten()
 
-        # rospy.logdebug(f"cluster_centroids: {cluster_centroids}")
         
         sorted_indices = np.argsort(average_gradient_magnitudes)
         cluster_centroids = cluster_centroids[sorted_indices]
@@ -455,7 +455,7 @@ class SOGMMGridNode:
             logging.getLogger("rosout").setLevel(logging.DEBUG)
 
         # Parameters
-        self.gmm_topic = rospy.get_param("~gmm_topic", "/starling1/mpa/gmm")
+        self.gmm_topic = rospy.get_param("~gmm_topic", "/starling1/mpa/gmm_updated")
         self.static_cluster_center = rospy.get_param("/simple_exploration", False)
         self.map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0, 0.0), (-1.0, 4.5, 0.0)])
         self.grid_marker_scale = rospy.get_param("~grid_marker_scale", 1.0)
