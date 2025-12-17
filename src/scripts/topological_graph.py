@@ -711,41 +711,6 @@ class TopoTree:
         marker.action = Marker.DELETEALL
         marker_array.markers.append(marker)
         
-        # Add bounds
-        bounds_marker = Marker()
-        bounds_marker.header.frame_id = self.world_frame_id
-        bounds_marker.header.stamp = rospy.Time.now()
-        bounds_marker.ns = "bounds"
-        bounds_marker.id = -1
-        bounds_marker.type = Marker.LINE_LIST
-        bounds_marker.action = Marker.ADD
-        bounds_marker.scale.x = 0.1
-        bounds_marker.color.a = 1.0
-        bounds_marker.color.r = 0.0
-        bounds_marker.color.g = 0.0
-        bounds_marker.color.b = 1.0
-
-        min_x, max_x = self.bounds[0]
-        min_y, max_y = self.bounds[1]
-        min_z, max_z = self.bounds[2]
-
-        p1 = self.create_point((min_x, min_y, min_z))
-        p2 = self.create_point((max_x, min_y, min_z))
-        p3 = self.create_point((max_x, max_y, min_z))
-        p4 = self.create_point((min_x, max_y, min_z))
-
-        p5 = self.create_point((min_x, min_y, max_z))
-        p6 = self.create_point((max_x, min_y, max_z))
-        p7 = self.create_point((max_x, max_y, max_z))
-        p8 = self.create_point((min_x, max_y, max_z))
-
-        bounds_marker.points = [
-            p1, p2, p2, p3, p3, p4, p4, p1,  # Bottom face
-            p5, p6, p6, p7, p7, p8, p8, p5,  # Top face
-            p1, p5, p2, p6, p3, p7, p4, p8,  # Vertical lines
-        ]
-        marker_array.markers.append(bounds_marker)
-        
         # Visualize all candidates
         for idx, vp in enumerate(self.viewpoint_candidates):
             marker = Marker()
