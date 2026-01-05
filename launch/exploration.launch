@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- SOGMM ROS Node Launch File -->
+
+    <rosparam command="load" file="$(find gmms_exploration)/config/exploration_config.yaml" />
+
+    <node name="sogmm_odom" pkg="gmms_exploration" type="sogmm_odometry_node.py"
+          launch-prefix="bash -c 'cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">
+    </node>
+    
+    <node name="sogmm_node" pkg="gmms_exploration" type="sogmm_ros_node.py" output="screen"
+          launch-prefix="bash -c 'cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">    
+    </node>
+
+    <node name="sogmm_grid_node" pkg="gmms_exploration" type="sogmm_grid_node.py" output="screen"/>
+    
+    <node name="sogmm_exploration_node" pkg="gmms_exploration" type="sogmm_exploration_node.py" output="screen"/>
+    
+    <include file="$(find poly_traj_ros)/launch/poly_traj_system.launch"/>
+    
+    
+    <arg name="rviz" default="false" />
+    <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find gmms_exploration)/config/sogmm_rviz.rviz" />
+    
+</launch>
