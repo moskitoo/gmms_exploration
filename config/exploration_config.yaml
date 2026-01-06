@@ -1,4 +1,7 @@
 sogmm_node:
+  # Logging
+  log_level: "DEBUG"  # Options: DEBUG, INFO, WARN, ERROR, FATAL
+  
   # SOGMM Algorithm Parameters
   bandwidth: 0.02
   tolerance: 1.0e-10
@@ -51,5 +54,6 @@ sogmm_grid_node:
 sogmm_exploration_node:
   exploration_distance_gain: 0.2
   clamp_z: True
+  distance_threshold: 2.0
 
 simple_exploration: False 

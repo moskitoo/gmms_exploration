@@ -18,17 +18,19 @@ from scipy.spatial.transform import Rotation as R
 import heapq
 import copy
 import tf2_ros
+import threading
 
 
 class TopoTree:
-    def __init__(self, simple_mode: bool = False, exploration_distance_gain: float=0.1):
+    def __init__(self, simple_mode: bool = False, exploration_distance_gain: float=0.1, distance_threshold: float=0.5):
         # Initialize graph
         self.graph = nx.Graph()
         self.frontier_graph = nx.Graph()
+        self.graph_lock = threading.Lock()  # Protect graph access from multiple threads
         self.node_id = 0
         self.previous_position = None
-        self.distance_threshold = 0.5  # meters
-        self.odom_threshold = 0.3
+        self.distance_threshold = distance_threshold  # meters
+        self.odom_threshold = 0.1  # meters
         # self.odom_frame = None
         self.odom = np.eye(4, 4)
         self.fov = np.radians(116.0)
@@ -105,17 +107,21 @@ class TopoTree:
 
     def _odom_timer_callback(self, event):
         """Timer callback to continuously update odometry and create graph nodes"""
+        rospy.logdebug("Odom timer callback triggered")
         self.lookup_odom()
     
     def lookup_odom(self):
+        rospy.logdebug("[lookup_odom] Starting odometry lookup")
         # Lookup transform
         try:
             # Lookup the static transform
             source_frame = self.world_frame_id
             target_frame = self.odom_frame_id
+            rospy.logdebug(f"[lookup_odom] Looking up transform from {source_frame} to {target_frame}")
             transform = self.tf_buffer.lookup_transform(
                 source_frame, target_frame, rospy.Time(0)
             )
+            rospy.logdebug("[lookup_odom] Transform lookup successful")
 
         except tf2_ros.LookupException as e:
             rospy.logerr_throttle(5.0, f"Transform lookup failed: {e}")
@@ -126,6 +132,8 @@ class TopoTree:
         except tf2_ros.ExtrapolationException as e:
             rospy.logerr_throttle(5.0, f"Transform extrapolation issue: {e}")
             return -1
+        
+        rospy.logdebug("[lookup_odom] Updating odom_pos and odom_yaw")
         self.odom_pos = np.array(
             [
                 transform.transform.translation.x,
@@ -141,8 +149,9 @@ class TopoTree:
                 transform.transform.rotation.w,
             ]
         ).as_euler("xyz")[2]
-        # rospy.loginfo(f"Odom pos: {self.odom_pos}, Odom yaw: {self.odom_yaw}")
+        rospy.logdebug(f"[lookup_odom] Odom pos: {self.odom_pos}, Odom yaw: {self.odom_yaw}")
 
+        rospy.logdebug("[lookup_odom] Updating odom matrix")
         self.odom[0, 3] = transform.transform.translation.x
         self.odom[1, 3] = transform.transform.translation.y
         self.odom[2, 3] = transform.transform.translation.z
@@ -157,75 +166,99 @@ class TopoTree:
 
         # Skip graph building in simple mode
         if self.simple_mode:
+            rospy.logdebug("[lookup_odom] Simple mode - skipping graph building")
             return 0
 
-        # Create a unique ID for this position
-        self.node_id += 1
-        current_node_id = self.node_id
-        if self.previous_position is not None:
-            distance = math.sqrt(
-                (transform.transform.translation.x - self.previous_position[0]) ** 2
-                + (transform.transform.translation.y - self.previous_position[1]) ** 2
-                + (transform.transform.translation.z - self.previous_position[2]) ** 2
-            )
-            if distance >= self.distance_threshold or distance == 0.0:
-                # Add edge between previous node and current node if threshold is met
-                pos_np = np.array(
-                    [
-                        transform.transform.translation.x,
-                        transform.transform.translation.y,
-                        transform.transform.translation.z,
-                    ]
+        rospy.logdebug("[lookup_odom] Graph mode - proceeding with graph building")
+        
+        # Acquire lock to protect graph modifications
+        with self.graph_lock:
+            # Create a unique ID for this position
+            self.node_id += 1
+            current_node_id = self.node_id
+            rospy.logdebug(f"[lookup_odom] Created node ID: {current_node_id}")
+            
+            if self.previous_position is not None:
+                rospy.logdebug("[lookup_odom] Previous position exists - checking distance")
+                distance = math.sqrt(
+                    (transform.transform.translation.x - self.previous_position[0]) ** 2
+                    + (transform.transform.translation.y - self.previous_position[1]) ** 2
+                    + (transform.transform.translation.z - self.previous_position[2]) ** 2
                 )
-                distances = [
-                    (n, np.linalg.norm(pos_np - np.array(d["pos"])))
-                    for (n, d) in self.graph.nodes(data=True)
-                    if d["predicted"] == False
-                ]
-                _min = min(distances, key=lambda x: x[1])
-                if _min[1] > self.odom_threshold:
-                    self.graph.add_node(
-                        current_node_id,
-                        pos=(
+                rospy.logdebug(f"[lookup_odom] Distance from previous: {distance:.3f}m (threshold: {self.distance_threshold}m)")
+                
+                if distance >= self.distance_threshold or distance == 0.0:
+                    rospy.logdebug("[lookup_odom] Distance threshold met - adding node and edge")
+                    # Add edge between previous node and current node if threshold is met
+                    pos_np = np.array(
+                        [
                             transform.transform.translation.x,
                             transform.transform.translation.y,
                             transform.transform.translation.z,
-                        ),
-                        predicted=False,
-                        utility=0.0,
-                        frontier=False,
+                        ]
                     )
-                    self.graph.add_edge(_min[0], self.node_id)
-                    self.odom_id = current_node_id
-                
-                # Always update previous_position when distance threshold is met,
-                # even if node wasn't added (to avoid comparing against stale position)
+                    distances = [
+                        (n, np.linalg.norm(pos_np - np.array(d["pos"])))
+                        for (n, d) in self.graph.nodes(data=True)
+                        if d["predicted"] == False
+                    ]
+                    _min = min(distances, key=lambda x: x[1])
+                    rospy.logdebug(f"[lookup_odom] Nearest node: {_min[0]} at distance {_min[1]:.3f}m (threshold: {self.odom_threshold}m)")
+                    
+                    if _min[1] > self.odom_threshold:
+                        rospy.logdebug(f"[lookup_odom] Adding new node {current_node_id} and edge to node {_min[0]}")
+                        self.graph.add_node(
+                            current_node_id,
+                            pos=(
+                                transform.transform.translation.x,
+                                transform.transform.translation.y,
+                                transform.transform.translation.z,
+                            ),
+                            predicted=False,
+                            utility=0.0,
+                            frontier=False,
+                        )
+                        self.graph.add_edge(_min[0], self.node_id)
+                        self.odom_id = current_node_id
+                    else:
+                        rospy.logdebug(f"[lookup_odom] Skipping node addition - too close to existing node")
+                    
+                    # Always update previous_position when distance threshold is met,
+                    # even if node wasn't added (to avoid comparing against stale position)
+                    rospy.logdebug("[lookup_odom] Updating previous_position")
+                    self.previous_position = (
+                        transform.transform.translation.x,
+                        transform.transform.translation.y,
+                        transform.transform.translation.z,
+                    )
+                else:
+                    rospy.logdebug("[lookup_odom] Distance threshold not met - skipping node/edge creation")
+
+            else:
+                rospy.logdebug("[lookup_odom] No previous position - creating first node")
+                self.graph.add_node(
+                    current_node_id,
+                    pos=(
+                        transform.transform.translation.x,
+                        transform.transform.translation.y,
+                        transform.transform.translation.z,
+                    ),
+                    predicted=False,
+                    utility=0.0,
+                    frontier=False,
+                )
                 self.previous_position = (
                     transform.transform.translation.x,
                     transform.transform.translation.y,
                     transform.transform.translation.z,
                 )
+                rospy.logdebug(f"[lookup_odom] First node created with ID {current_node_id}")
 
-        else:
-            self.graph.add_node(
-                current_node_id,
-                pos=(
-                    transform.transform.translation.x,
-                    transform.transform.translation.y,
-                    transform.transform.translation.z,
-                ),
-                predicted=False,
-                utility=0.0,
-                frontier=False,
-            )
-            self.previous_position = (
-                transform.transform.translation.x,
-                transform.transform.translation.y,
-                transform.transform.translation.z,
-            )
-
-        # Publish the graph as markers
-        self.publish_graph_markers()
+            # Publish the graph as markers (lock is still held here)
+            rospy.logdebug(f"[lookup_odom] Publishing graph markers (nodes: {self.graph.number_of_nodes()}, edges: {self.graph.number_of_edges()})")
+            self.publish_graph_markers()
+        
+        rospy.logdebug("[lookup_odom] Completed")
 
     def odom_callback(self, msg):
         pass
@@ -386,81 +419,83 @@ class TopoTree:
         """
         Original graph-based RT-GuIDE approach
         """
-        if self.graph.number_of_nodes() == 0:
-            return None
-        if self.path is not None:
-            ## Check if close to odom and replan or not
-            odom_np = self.odom_pos[:3]
-            path_np = self.path[-1, :]
+        with self.graph_lock:
+            if self.graph.number_of_nodes() == 0:
+                return None
+            
+            if self.path is not None:
+                ## Check if close to odom and replan or not
+                odom_np = self.odom_pos[:3]
+                path_np = self.path[-1, :]
 
-            if np.linalg.norm(odom_np - path_np) >= goal_tol:
-                # The robot is far from goal, let's check if it is moving
-                # If odom changed, no need to replan (robot is not stuck)
-                if self.prev_odom_pos is not None:
-                    prev_pos = self.prev_odom_pos[:3]
-                    curr_pos = odom_np
+                if np.linalg.norm(odom_np - path_np) >= goal_tol:
+                    # The robot is far from goal, let's check if it is moving
+                    # If odom changed, no need to replan (robot is not stuck)
+                    if self.prev_odom_pos is not None:
+                        prev_pos = self.prev_odom_pos[:3]
+                        curr_pos = odom_np
 
-                    if (
-                        np.linalg.norm(prev_pos - curr_pos) >= fail_pos_tol
-                        or np.abs(self.odom_yaw - self.prev_odom_yaw) >= fail_yaw_tol
-                    ):
-                        self.prev_odom_pos = self.odom_pos
-                        self.prev_odom_yaw = self.odom_yaw
-                        return self.path
-                # return self.path
+                        if (
+                            np.linalg.norm(prev_pos - curr_pos) >= fail_pos_tol
+                            or np.abs(self.odom_yaw - self.prev_odom_yaw) >= fail_yaw_tol
+                        ):
+                            self.prev_odom_pos = self.odom_pos
+                            self.prev_odom_yaw = self.odom_yaw
+                            return self.path
+                    # return self.path
 
-        if self.goal_node is not None:
-            try:
-                self.graph.nodes[self.goal_node]["utility"] = 0.0
-            except:
-                pass
-        self.prev_odom_pos = self.odom_pos
-        self.prev_odom_yaw = self.odom_yaw
-        # Ensure positivity
-        min_utility = np.min(utility)
-        if min_utility < 0.0:
-            utility += min_utility
-        self.prune_old_frontier_candidates()
-        self.zero_frontier_utilities()
-        for i, p in enumerate(point):
-            # p = cam2world[:3,:3] @ p + cam2world[:3,3]
-            self.add_frontier_candidate(p, utility[i])
-        self.prune_frontiers()
-        odom = self.odom_pos[:3]
-        dists = [
-            (node, np.linalg.norm((odom) - np.array(data["pos"])))
-            for node, data in self.graph.nodes(data=True)
-            if data["frontier"] == False and data["predicted"] == False
-        ]
+            if self.goal_node is not None:
+                try:
+                    self.graph.nodes[self.goal_node]["utility"] = 0.0
+                except:
+                    pass
+            self.prev_odom_pos = self.odom_pos
+            self.prev_odom_yaw = self.odom_yaw
+            # Ensure positivity
+            min_utility = np.min(utility)
+            if min_utility < 0.0:
+                utility += min_utility
+            self.prune_old_frontier_candidates()
+            self.zero_frontier_utilities()
+            for i, p in enumerate(point):
+                # p = cam2world[:3,:3] @ p + cam2world[:3,3]
+                self.add_frontier_candidate(p, utility[i])
+            self.prune_frontiers()
+            odom = self.odom_pos[:3]
+            dists = [
+                (node, np.linalg.norm((odom) - np.array(data["pos"])))
+                for node, data in self.graph.nodes(data=True)
+                if data["frontier"] == False and data["predicted"] == False
+            ]
 
-        start = min(dists, key=lambda x: x[1])
-        odom_dists = [
-            (node, np.linalg.norm((odom) - np.array(data["pos"])))
-            for node, data in self.graph.nodes(data=True)
-            if data["frontier"] == False and data["predicted"] == True
-        ]
+            start = min(dists, key=lambda x: x[1])
+            odom_dists = [
+                (node, np.linalg.norm((odom) - np.array(data["pos"])))
+                for node, data in self.graph.nodes(data=True)
+                if data["frontier"] == False and data["predicted"] == True
+            ]
 
-        for n, d in odom_dists:
-            if d <= 1.1 * goal_tol:
-                self.graph.nodes[n]["utility"] = 0.0
+            for n, d in odom_dists:
+                if d <= 1.1 * goal_tol:
+                    self.graph.nodes[n]["utility"] = 0.0
 
-        d, u, p, c = self.dijkstra(start[0])
+            d, u, p, c = self.dijkstra(start[0])
 
-        self.latest_cost_benefit = d, u, c
-        # self.publish_cost_markers()
+            self.latest_cost_benefit = d, u, c
+            # self.publish_cost_markers()
 
-        max_utility_path = max(c, key=c.get)
+            max_utility_path = max(c, key=c.get)
 
-        self.path = np.zeros((len(p[max_utility_path]), 3))
-        self.goal_node = p[max_utility_path][-1]
-        for i, x in enumerate(p[max_utility_path]):
-            self.path[i, 0] = self.graph.nodes[x]["pos"][0]
-            self.path[i, 1] = self.graph.nodes[x]["pos"][1]
-            self.path[i, 2] = self.graph.nodes[x]["pos"][2]
+            self.path = np.zeros((len(p[max_utility_path]), 3))
+            self.goal_node = p[max_utility_path][-1]
+            for i, x in enumerate(p[max_utility_path]):
+                self.path[i, 0] = self.graph.nodes[x]["pos"][0]
+                self.path[i, 1] = self.graph.nodes[x]["pos"][1]
+                self.path[i, 2] = self.graph.nodes[x]["pos"][2]
 
-        self.publish_graph_markers()
+            self.publish_graph_markers()
 
-        return self.path
+            return self.path
 
     def find_visited_region(self, region_center):
         """
@@ -955,6 +990,7 @@ class TopoTree:
     def add_frontier_candidate(self, point, utility):
         # print("add frontier candidate!!!")
         # self.print_graph()
+        # Note: This is called from spin_graph_mode which already holds the lock
         if self.graph.number_of_nodes() == 0:
             return
         # check if point is inside boundary - use extended bounds for region centers
@@ -1071,6 +1107,7 @@ class TopoTree:
         )
 
     def publish_graph_markers(self):
+        """Publish graph markers. Must be called while holding graph_lock."""
         marker_array = MarkerArray()
         # print("world frame id is: ", self.world_frame_id)
         if self.world_frame_id is None:

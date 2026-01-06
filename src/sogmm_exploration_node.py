@@ -37,8 +37,9 @@ class SOGMMExplorationNode:
         self.clamp_z = rospy.get_param('~clamp_z', False)
 
         self.exploration_distance_gain = rospy.get_param('~exploration_distance_gain', 0.1)
+        self.distance_threshold = rospy.get_param('~distance_threshold', 0.5)
 
-        self.topo_tree = TopoTree(simple_mode=self.simple_mode, exploration_distance_gain=self.exploration_distance_gain)
+        self.topo_tree = TopoTree(simple_mode=self.simple_mode, exploration_distance_gain=self.exploration_distance_gain, distance_threshold=self.distance_threshold)
 
         self.fly_trajectory_client = rospy.ServiceProxy("/starling1/fly_trajectory", FlyTrajectory)
         self.get_viewpoint_client = rospy.ServiceProxy("get_viewpoint", GetViewpoint)
