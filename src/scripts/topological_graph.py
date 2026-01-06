@@ -95,8 +95,18 @@ class TopoTree:
         # TF
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        
+        # Set up timer to continuously update odometry and create graph nodes
+        # This ensures nodes are created during flight, not just during planning
+        odom_update_rate = rospy.get_param("~odom_update_rate", 10.0)  # Hz
+        self.odom_timer = rospy.Timer(rospy.Duration(1.0 / odom_update_rate), self._odom_timer_callback)
+        
         rospy.loginfo("High Level Planner Node Started")
 
+    def _odom_timer_callback(self, event):
+        """Timer callback to continuously update odometry and create graph nodes"""
+        self.lookup_odom()
+    
     def lookup_odom(self):
         # Lookup transform
         try:
@@ -108,13 +118,13 @@ class TopoTree:
             )
 
         except tf2_ros.LookupException as e:
-            rospy.logerr(f"Transform lookup failed: {e}")
+            rospy.logerr_throttle(5.0, f"Transform lookup failed: {e}")
             return -1
         except tf2_ros.ConnectivityException as e:
-            rospy.logerr(f"Transform connectivity issue: {e}")
+            rospy.logerr_throttle(5.0, f"Transform connectivity issue: {e}")
             return -1
         except tf2_ros.ExtrapolationException as e:
-            rospy.logerr(f"Transform extrapolation issue: {e}")
+            rospy.logerr_throttle(5.0, f"Transform extrapolation issue: {e}")
             return -1
         self.odom_pos = np.array(
             [
@@ -186,12 +196,15 @@ class TopoTree:
                         frontier=False,
                     )
                     self.graph.add_edge(_min[0], self.node_id)
-                    self.previous_position = (
-                        transform.transform.translation.x,
-                        transform.transform.translation.y,
-                        transform.transform.translation.z,
-                    )
                     self.odom_id = current_node_id
+                
+                # Always update previous_position when distance threshold is met,
+                # even if node wasn't added (to avoid comparing against stale position)
+                self.previous_position = (
+                    transform.transform.translation.x,
+                    transform.transform.translation.y,
+                    transform.transform.translation.z,
+                )
 
         else:
             self.graph.add_node(
