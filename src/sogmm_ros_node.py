@@ -568,6 +568,9 @@ class SOGMMROSNode:
         # Initialize ROS node
         rospy.init_node("sogmm_ros_node", anonymous=True)
 
+        # Set log level from parameter
+        self._set_log_level()
+
         # Load ROS parameters
         self._load_parameters()
 
@@ -582,6 +585,31 @@ class SOGMMROSNode:
         
         # Register shutdown hook for timing statistics
         rospy.on_shutdown(self.shutdown_hook)
+
+    def _set_log_level(self):
+        """Set ROS logger level from parameter."""
+        import logging
+
+        log_level_str = rospy.get_param("~log_level", "INFO").upper()
+
+        # Map string to Python logging level
+        log_level_map = {
+            "DEBUG": logging.DEBUG,
+            "INFO": logging.INFO, 
+            "WARN": logging.WARN,
+            "ERROR": logging.ERROR,
+            "FATAL": logging.FATAL
+        }
+
+        if log_level_str not in log_level_map:
+            rospy.logwarn(f"Invalid log level '{log_level_str}', defaulting to INFO")
+            log_level_str = "INFO"
+
+        # Set the logger level using Python's logging module
+        logging.getLogger("rosout").setLevel(log_level_map[log_level_str])
+
+        rospy.loginfo(f"Log level set to: {log_level_str}")
+        rospy.logdebug("This is a debug message - if you see this, DEBUG logging is working!")
 
     def _load_parameters(self):
         """Load all ROS parameters with default values."""
@@ -766,6 +794,8 @@ class SOGMMROSNode:
         try:
             start_time = time.time()
 
+            rospy.logdebug("Entered process_pointcloud")
+
             # rospy.loginfo("===============================================")
             # rospy.loginfo(f"CONFIG: {self.learner.tol}, {self.learner.reg_covar}, {self.learner.max_iter}")
             # rospy.loginfo("===============================================")
@@ -817,6 +847,9 @@ class SOGMMROSNode:
                     min_observations=self.prune_min_observations,
                     max_fusion_ratio=self.max_fusion_ratio,
                 )
+                # Filter out indices that were pruned
+                current_n_components = self.master_gmm.model.n_components_
+                updated_indices = [idx for idx in updated_indices if idx < current_n_components]
 
             if (
                 self.frame_count % self.freeze_interval_frames == 0
@@ -829,10 +862,11 @@ class SOGMMROSNode:
             proc_timestamp = time.time()
             processing_time = proc_timestamp - gira_timestamp
 
-            # Visualize results - only if we have a model
-            # Store updated indices for periodic publishing
+            # Store updated indices for periodic publishing (AFTER pruning)
             with self.updated_indices_lock:
                 self.latest_updated_indices = updated_indices
+
+            # Visualize results - only if we have a model
 
             viz_start_time = time.time()
             if self.enable_visualization and self.master_gmm.model.n_components_ > 0:
@@ -862,6 +896,9 @@ class SOGMMROSNode:
 
     def gmm_publish_timer_callback(self, event):
         """Timer callback to periodically publish the latest GMM."""
+
+        rospy.logdebug("Entered gmm_publish_timer_callback")
+
         if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
             return
         
@@ -875,48 +912,65 @@ class SOGMMROSNode:
         """Publish the current state of the master GMM."""
         if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
             return
-        
-        # Create message for complete GMM
-        complete_gmm_msg = GaussianMixtureModel()
-        complete_gmm_msg.n_components = self.master_gmm.model.n_components_
-        
-        # Create message for updated Gaussians only
-        updated_gmm_msg = GaussianMixtureModel()
-        updated_gmm_msg.n_components = len(updated_indices)
 
-        for idx in range(self.master_gmm.model.n_components_):
-            gaussian_component = GaussianComponent()
-            # use the first 3 dimensions of the mean (x,y,z)
-            gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
-            # extract the 4x4 covariance for this component and take the 3x3 spatial part
-            cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
-            gaussian_component.covariance = cov3.flatten().tolist()
-            gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
-            gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
-            gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
-            gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
-            gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
+        rospy.logdebug("Entered publish_gmm")
+        
+        # Acquire lock to prevent model modification during publishing
+        with self.processing_lock:
+            # Check again after acquiring lock
+            if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
+                return
+                
+            # Filter out invalid indices that may have been pruned
+            current_n_components = self.master_gmm.model.n_components_
+            valid_updated_indices = [idx for idx in updated_indices if idx < current_n_components]
             
-            # Add to complete GMM message
-            complete_gmm_msg.components.append(gaussian_component)
+            if len(valid_updated_indices) < len(updated_indices):
+                rospy.logdebug(f"Filtered out {len(updated_indices) - len(valid_updated_indices)} invalid indices due to pruning")
             
-            # Add to updated GMM message only if it was updated
-            if idx in updated_indices:
-                # Create a separate component for updated message
-                updated_component = GaussianComponent()
-                updated_component.mean = gaussian_component.mean
-                updated_component.covariance = gaussian_component.covariance
-                updated_component.weight = gaussian_component.weight
-                updated_component.fusion_count = gaussian_component.fusion_count
-                updated_component.observation_count = gaussian_component.observation_count
-                updated_component.last_displacement = gaussian_component.last_displacement
-                updated_component.uncertainty = gaussian_component.uncertainty
-                updated_gmm_msg.components.append(updated_component)
+            # Create message for complete GMM
+            complete_gmm_msg = GaussianMixtureModel()
+            complete_gmm_msg.n_components = current_n_components
+            
+            # Create message for updated Gaussians only
+            updated_gmm_msg = GaussianMixtureModel()
+            updated_gmm_msg.n_components = len(valid_updated_indices)
 
-        # Publish complete GMM
+            try:
+                for idx in range(current_n_components):
+                    gaussian_component = GaussianComponent()
+                    # use the first 3 dimensions of the mean (x,y,z)
+                    gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
+                    # extract the 4x4 covariance for this component and take the 3x3 spatial part
+                    cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
+                    gaussian_component.covariance = cov3.flatten().tolist()
+                    gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
+                    gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
+                    gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
+                    gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
+                    gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
+                    
+                    # Add to complete GMM message
+                    complete_gmm_msg.components.append(gaussian_component)
+                    
+                    # Add to updated GMM message only if it was updated
+                    if idx in valid_updated_indices:
+                        # Create a separate component for updated message
+                        updated_component = GaussianComponent()
+                        updated_component.mean = gaussian_component.mean
+                        updated_component.covariance = gaussian_component.covariance
+                        updated_component.weight = gaussian_component.weight
+                        updated_component.fusion_count = gaussian_component.fusion_count
+                        updated_component.observation_count = gaussian_component.observation_count
+                        updated_component.last_displacement = gaussian_component.last_displacement
+                        updated_component.uncertainty = gaussian_component.uncertainty
+                        updated_gmm_msg.components.append(updated_component)
+            except IndexError as e:
+                rospy.logwarn(f"IndexError during GMM publishing (likely due to concurrent pruning): {e}. Skipping this publish cycle.")
+                return  # Skip publishing this cycle, next one will be correct
+
+        # Publish outside the lock to avoid blocking processing
         self.gmm_pub.publish(complete_gmm_msg)
-        
-        # Publish only updated Gaussians
         self.updated_gmm_pub.publish(updated_gmm_msg)
 
     def transform_point_cloud(self, msg, points_3d_original, target_frame):
