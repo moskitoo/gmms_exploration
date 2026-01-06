@@ -184,8 +184,15 @@ class SOGMMExplorationNode:
                             self.viewpoint_attempt_count = 0
                     # else: retry same viewpoint on next iteration
                 else:
-                    # Graph mode: try closer waypoint
-                    self.current_waypoint_index = max(0, target_index - 1)
+                    # Graph mode: check retry limit
+                    if self.viewpoint_attempt_count >= self.max_retries_per_viewpoint:
+                        rospy.logerr(f"Waypoint failed after {self.viewpoint_attempt_count} attempts. Abandoning path.")
+                        self.path_to_ftr = None
+                        self.consecutive_failures = 0
+                        self.viewpoint_attempt_count = 0
+                    else:
+                        # Try closer waypoint
+                        self.current_waypoint_index = max(0, target_index - 1)
         else:
             rospy.loginfo_throttle(5.0, "No active path to follow. Waiting for new path.")
             rospy.sleep(1.0)
