@@ -444,6 +444,9 @@ class TopoTree:
             self.path[i, 0] = self.graph.nodes[x]["pos"][0]
             self.path[i, 1] = self.graph.nodes[x]["pos"][1]
             self.path[i, 2] = self.graph.nodes[x]["pos"][2]
+
+        self.publish_graph_markers()
+
         return self.path
 
     def find_visited_region(self, region_center):
@@ -532,7 +535,7 @@ class TopoTree:
             vp_z = region_center[2]
             
             # Clamp z to map bounds
-            vp_z = np.clip(vp_z, self.bounds[2][0], self.bounds[2][1])
+            vp_z = np.clip(vp_z, self.bounds[2][0]+0.1, self.bounds[2][1]-0.1)
             
             # Check bounds - viewpoints must stay within original bounds (not extended)
             # This ensures robot doesn't navigate outside safe area
@@ -996,7 +999,7 @@ class TopoTree:
             # Clamp all coordinates to map bounds
             vp_x = np.clip(vp_x, self.bounds[0][0], self.bounds[0][1])
             vp_y = np.clip(vp_y, self.bounds[1][0], self.bounds[1][1])
-            vp_z = np.clip(vp_z, self.bounds[2][0], self.bounds[2][1])
+            vp_z = np.clip(vp_z, self.bounds[2][0]+0.1, self.bounds[2][1]-0.1)
             
             sampled_points[i, 0] = vp_x
             sampled_points[i, 1] = vp_y
