@@ -119,12 +119,12 @@ class ExplorationGrid:
         
         unique_cluster_indices, inverse_indices = np.unique(cluster_indices, axis=0, return_inverse=True)
 
-        # rospy.logdebug(f"cluster_indices: {cluster_indices}")
-        # rospy.logdebug(f"unique_cluster_indices: {unique_cluster_indices}")
+        rospy.logdebug(f"cluster_indices: {cluster_indices}")
+        rospy.logdebug(f"unique_cluster_indices: {unique_cluster_indices}")
 
-        # rospy.logdebug(f"cluster_centroids: {unique_cluster_indices * cluster_size}")
+        rospy.logdebug(f"cluster_centroids: {unique_cluster_indices * cluster_size}")
 
-        # rospy.logdebug(f"means: {means}")
+        rospy.logdebug(f"means: {means}")
 
         num_unique = len(unique_cluster_indices)
         sum_means = np.zeros((num_unique, 3))
@@ -147,8 +147,10 @@ class ExplorationGrid:
         mean_positions = sum_means / counts[:, np.newaxis]
         mean_grads = sum_grads / counts[:, np.newaxis]
 
-        # rospy.logdebug(f"mean_positions: {mean_positions}")
-        # rospy.logdebug(f"mean_grads: {mean_grads}")
+        rospy.logdebug(f"sum grads: {sum_grads}")
+
+        rospy.logdebug(f"mean_positions: {mean_positions}")
+        rospy.logdebug(f"mean_grads: {mean_grads}")
 
         if self.static_cluster_center:
             # Update the pre-initialized grid with new gradient values
@@ -193,6 +195,8 @@ class ExplorationGrid:
             grads_mask = (mean_grads > ths_grad).flatten()
             mean_positions = mean_positions[grads_mask]
             mean_grads = mean_grads[grads_mask]
+        
+        rospy.logdebug(f"mean_grads (after filtering): {mean_grads}")
 
         cluster_centroids = mean_positions
 
@@ -226,6 +230,8 @@ class ExplorationGrid:
             top_indices = np.argsort(nms_gradient_magnitudes)[-num_clusters:]
             cluster_centroids = nms_clusters[top_indices]
             average_gradient_magnitudes = nms_gradient_magnitudes[top_indices]
+
+        rospy.logdebug(f"avg gradient magnitudes: {average_gradient_magnitudes}")
         
         return cluster_centroids, average_gradient_magnitudes
     
@@ -389,6 +395,7 @@ class SOGMMGridNode:
 
         # Parameters
         self.gmm_topic = rospy.get_param("~gmm_topic", "/starling1/mpa/gmm")
+        self.updated_gmm_topic = rospy.get_param("~updated_gmm_topic", "/starling1/mpa/updated_gmm")
         self.static_cluster_center = rospy.get_param("/simple_exploration", False)
         self.map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0, 0.0), (-1.0, 4.5, 0.0)])
         self.grid_marker_scale = rospy.get_param("~grid_marker_scale", 1.0)
@@ -407,14 +414,19 @@ class SOGMMGridNode:
         )
 
         # Subscribers
-        self.gmm_sub = rospy.Subscriber(
-            self.gmm_topic, GaussianMixtureModel, self.gmm_callback, queue_size=1
-        )
+        if self.static_cluster_center:
+            self.gmm_sub = rospy.Subscriber(
+                self.gmm_topic, GaussianMixtureModel, self.gmm_callback, queue_size=1
+            )
+        else:
+            self.gmm_sub = rospy.Subscriber(
+                self.updated_gmm_topic, GaussianMixtureModel, self.gmm_callback, queue_size=1
+            )
 
         self.viewpoint_service = rospy.Service("get_viewpoint", GetViewpoint, self.get_viewpoint_callback)
 
         # Publishers
-        self.uct_id_pub = rospy.Publisher("/starling1/mpa/uct_id", Int32)
+        self.uct_id_pub = rospy.Publisher("/starling1/mpa/uct_id", Int32, queue_size=1)
 
         self.grid_marker_pub = rospy.Publisher(
             "/starling1/mpa/grid_markers", MarkerArray, queue_size=1
@@ -439,6 +451,8 @@ class SOGMMGridNode:
     def process_gmm(self, msg: GaussianMixtureModel):
         gmm = msg.components
         n_components = len(gmm)
+
+        rospy.logdebug(f"n components: {n_components}")
 
         if n_components > 0:
             means = np.empty([n_components, 3])
