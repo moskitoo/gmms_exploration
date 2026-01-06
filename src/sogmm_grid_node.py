@@ -189,7 +189,7 @@ class ExplorationGrid:
             return None, None
         
         # For dynamic mode, apply filtering after computing cluster centroids
-        if filter_grad_mean:
+        if filter_grad_mean and len(mean_grads) > 1:
             avg_grad = np.mean(mean_grads)
             ths_grad = avg_grad
             grads_mask = (mean_grads > ths_grad).flatten()
@@ -419,9 +419,16 @@ class SOGMMGridNode:
                 self.gmm_topic, GaussianMixtureModel, self.gmm_callback, queue_size=1
             )
         else:
-            self.gmm_sub = rospy.Subscriber(
-                self.updated_gmm_topic, GaussianMixtureModel, self.gmm_callback, queue_size=1
+            # In dynamic mode, subscribe to both updated and complete GMM
+            # Use updated GMM when available, fallback to complete GMM
+            self.updated_gmm_sub = rospy.Subscriber(
+                self.updated_gmm_topic, GaussianMixtureModel, self.updated_gmm_callback, queue_size=1
             )
+            self.complete_gmm_sub = rospy.Subscriber(
+                self.gmm_topic, GaussianMixtureModel, self.complete_gmm_callback, queue_size=1
+            )
+            self.last_updated_gmm_time = None
+            self.use_complete_gmm_timeout = rospy.Duration(2.0)  # Use complete GMM if no update for 2 seconds
 
         self.viewpoint_service = rospy.Service("get_viewpoint", GetViewpoint, self.get_viewpoint_callback)
 
@@ -447,6 +454,22 @@ class SOGMMGridNode:
 
         # Process pose directly in callback to avoid threading issues
         self.process_gmm(msg)
+
+    def updated_gmm_callback(self, msg: GaussianMixtureModel):
+        """Handle updated GMM messages in dynamic mode"""
+        rospy.logdebug("Received updated GMM")
+        self.last_updated_gmm_time = rospy.Time.now()
+        self.process_gmm(msg)
+
+    def complete_gmm_callback(self, msg: GaussianMixtureModel):
+        """Handle complete GMM messages as fallback in dynamic mode"""
+        # Only use complete GMM if we haven't received an updated GMM recently
+        if self.last_updated_gmm_time is None or \
+           (rospy.Time.now() - self.last_updated_gmm_time) > self.use_complete_gmm_timeout:
+            rospy.logdebug("Using complete GMM (no recent updated GMM available)")
+            self.process_gmm(msg)
+        else:
+            rospy.logdebug("Skipping complete GMM (using updated GMM instead)")
 
     def process_gmm(self, msg: GaussianMixtureModel):
         gmm = msg.components
