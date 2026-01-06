@@ -989,9 +989,19 @@ class TopoTree:
 
         angle = np.linspace(0, 2 * np.pi, self.num_samples)
         for i in range(self.num_samples):
-            sampled_points[i, 0] = point[0] + np.cos(angle[i]) * dist
-            sampled_points[i, 1] = point[1] + np.sin(angle[i]) * dist
-            sampled_points[i, 2] = point[2]
+            vp_x = point[0] + np.cos(angle[i]) * dist
+            vp_y = point[1] + np.sin(angle[i]) * dist
+            vp_z = point[2]
+            
+            # Clamp all coordinates to map bounds
+            vp_x = np.clip(vp_x, self.bounds[0][0], self.bounds[0][1])
+            vp_y = np.clip(vp_y, self.bounds[1][0], self.bounds[1][1])
+            vp_z = np.clip(vp_z, self.bounds[2][0], self.bounds[2][1])
+            
+            sampled_points[i, 0] = vp_x
+            sampled_points[i, 1] = vp_y
+            sampled_points[i, 2] = vp_z
+            
             _dists = [
                 (
                     node,
@@ -1010,12 +1020,16 @@ class TopoTree:
 
         min_id = min(enumerate(dists), key=lambda x: x[1][3])[0]
         for min_id, _ in enumerate(dists):
+            # Skip viewpoints outside bounds (should rarely happen after clamping)
             if (
-                sampled_points[min_id, 0] <= self.bounds[0][0]
-                or sampled_points[min_id, 0] >= self.bounds[0][1]
+                sampled_points[min_id, 0] < self.bounds[0][0]
+                or sampled_points[min_id, 0] > self.bounds[0][1]
             ) or (
-                sampled_points[min_id, 1] <= self.bounds[1][0]
-                or sampled_points[min_id, 1] >= self.bounds[1][1]
+                sampled_points[min_id, 1] < self.bounds[1][0]
+                or sampled_points[min_id, 1] > self.bounds[1][1]
+            ) or (
+                sampled_points[min_id, 2] < self.bounds[2][0]
+                or sampled_points[min_id, 2] > self.bounds[2][1]
             ):
                 continue
             self.node_id += 1
