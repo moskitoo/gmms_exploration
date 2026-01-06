@@ -579,6 +579,9 @@ class SOGMMROSNode:
 
         # Log initialization summary
         self._log_initialization()
+        
+        # Register shutdown hook for timing statistics
+        rospy.on_shutdown(self.shutdown_hook)
 
     def _load_parameters(self):
         """Load all ROS parameters with default values."""
@@ -645,6 +648,10 @@ class SOGMMROSNode:
             "/starling1/mpa/gmm", GaussianMixtureModel, queue_size=1
         )
 
+        self.updated_gmm_pub = rospy.Publisher(
+            "/starling1/mpa/updated_gmm", GaussianMixtureModel, queue_size=1
+        )
+
         # Subscribers
         self.pc_sub = rospy.Subscriber(
             "/starling1/mpa/tof_pc", PointCloud2, self.pointcloud_callback, queue_size=1
@@ -694,6 +701,12 @@ class SOGMMROSNode:
 
         # Timing
         self.last_prune_time = rospy.Time.now().to_sec()
+
+        # Timing statistics
+        self.gira_times = []
+        self.processing_times = []
+        self.viz_times = []
+        self.full_processing_times = []
 
         self.max_uct_id = 0
         
@@ -827,6 +840,13 @@ class SOGMMROSNode:
             viz_time = time.time() - viz_start_time
 
             full_processing_time = time.time() - start_time
+            
+            # Store timing statistics
+            self.gira_times.append(gira_time)
+            self.processing_times.append(processing_time)
+            self.viz_times.append(viz_time)
+            self.full_processing_times.append(full_processing_time)
+            
             n_components = self.master_gmm.model.n_components_
             rospy.loginfo(
                 f"Processed point cloud with {n_components} components in {full_processing_time:.3f}s (GIRA: {gira_time:.3f}s, Processing: {processing_time:.3f}s, Viz: {viz_time:.3f}s)"
@@ -856,29 +876,48 @@ class SOGMMROSNode:
         if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
             return
         
-        gmm_msg = GaussianMixtureModel()
+        # Create message for complete GMM
+        complete_gmm_msg = GaussianMixtureModel()
+        complete_gmm_msg.n_components = self.master_gmm.model.n_components_
+        
+        # Create message for updated Gaussians only
+        updated_gmm_msg = GaussianMixtureModel()
+        updated_gmm_msg.n_components = len(updated_indices)
 
         for idx in range(self.master_gmm.model.n_components_):
-            if idx in updated_indices or self.publish_whole_gmm:
-                gaussian_component = GaussianComponent()
-                # use the first 3 dimensions of the mean (x,y,z)
-                gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
-                # extract the 4x4 covariance for this component and take the 3x3 spatial part
-                cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
-                gaussian_component.covariance = cov3.flatten().tolist()
-                gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
-                gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
-                gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
-                gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
-                gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
-                gmm_msg.components.append(gaussian_component)
-        
-        if self.publish_whole_gmm:
-            gmm_msg.n_components = self.master_gmm.model.n_components_
-        else:
-            gmm_msg.n_components = len(updated_indices)
+            gaussian_component = GaussianComponent()
+            # use the first 3 dimensions of the mean (x,y,z)
+            gaussian_component.mean = self.master_gmm.model.means_[idx, :3].tolist()
+            # extract the 4x4 covariance for this component and take the 3x3 spatial part
+            cov3 = self.master_gmm.model.covariances_.reshape(-1, 4, 4)[idx, :3, :3]
+            gaussian_component.covariance = cov3.flatten().tolist()
+            gaussian_component.weight = float(self.master_gmm.model.weights_[idx])
+            gaussian_component.fusion_count = int(self.master_gmm.model.fusion_counts_[idx])
+            gaussian_component.observation_count = int(self.master_gmm.model.observation_counts_[idx])
+            gaussian_component.last_displacement = float(self.master_gmm.model.last_displacements_[idx])
+            gaussian_component.uncertainty = float(self.master_gmm.model.uncertainty_[idx])
+            
+            # Add to complete GMM message
+            complete_gmm_msg.components.append(gaussian_component)
+            
+            # Add to updated GMM message only if it was updated
+            if idx in updated_indices:
+                # Create a separate component for updated message
+                updated_component = GaussianComponent()
+                updated_component.mean = gaussian_component.mean
+                updated_component.covariance = gaussian_component.covariance
+                updated_component.weight = gaussian_component.weight
+                updated_component.fusion_count = gaussian_component.fusion_count
+                updated_component.observation_count = gaussian_component.observation_count
+                updated_component.last_displacement = gaussian_component.last_displacement
+                updated_component.uncertainty = gaussian_component.uncertainty
+                updated_gmm_msg.components.append(updated_component)
 
-        self.gmm_pub.publish(gmm_msg)
+        # Publish complete GMM
+        self.gmm_pub.publish(complete_gmm_msg)
+        
+        # Publish only updated Gaussians
+        self.updated_gmm_pub.publish(updated_gmm_msg)
 
     def transform_point_cloud(self, msg, points_3d_original, target_frame):
         try:
@@ -1296,6 +1335,49 @@ class SOGMMROSNode:
             clear_text.id = i
             clear_text.action = Marker.DELETE
             marker_array.markers.append(clear_text)
+
+    def shutdown_hook(self):
+        """
+        Called when node is shutting down. Logs timing statistics.
+        """
+        rospy.loginfo("="*80)
+        rospy.loginfo("SOGMM Node Shutdown - Timing Statistics Summary")
+        rospy.loginfo("="*80)
+        
+        if len(self.gira_times) > 0:
+            rospy.loginfo(f"Total frames processed: {len(self.gira_times)}")
+            rospy.loginfo("")
+            
+            gira_mean = np.mean(self.gira_times)
+            gira_std = np.std(self.gira_times)
+            rospy.loginfo(f"GIRA (GMM Generation) Time:")
+            rospy.loginfo(f"  Mean: {gira_mean:.4f}s")
+            rospy.loginfo(f"  Std:  {gira_std:.4f}s")
+            rospy.loginfo("")
+            
+            proc_mean = np.mean(self.processing_times)
+            proc_std = np.std(self.processing_times)
+            rospy.loginfo(f"Processing Time:")
+            rospy.loginfo(f"  Mean: {proc_mean:.4f}s")
+            rospy.loginfo(f"  Std:  {proc_std:.4f}s")
+            rospy.loginfo("")
+            
+            viz_mean = np.mean(self.viz_times)
+            viz_std = np.std(self.viz_times)
+            rospy.loginfo(f"Visualization Time:")
+            rospy.loginfo(f"  Mean: {viz_mean:.4f}s")
+            rospy.loginfo(f"  Std:  {viz_std:.4f}s")
+            rospy.loginfo("")
+            
+            full_mean = np.mean(self.full_processing_times)
+            full_std = np.std(self.full_processing_times)
+            rospy.loginfo(f"Total Processing Time:")
+            rospy.loginfo(f"  Mean: {full_mean:.4f}s")
+            rospy.loginfo(f"  Std:  {full_std:.4f}s")
+        else:
+            rospy.loginfo("No timing data collected (no frames processed)")
+        
+        rospy.loginfo("="*80)
 
     def run(self):
         """
