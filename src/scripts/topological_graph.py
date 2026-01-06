@@ -531,10 +531,14 @@ class TopoTree:
             vp_y = region_center[1] + np.sin(angle[i]) * dist
             vp_z = region_center[2]
             
+            # Clamp z to map bounds
+            vp_z = np.clip(vp_z, self.bounds[2][0], self.bounds[2][1])
+            
             # Check bounds - viewpoints must stay within original bounds (not extended)
             # This ensures robot doesn't navigate outside safe area
             if (vp_x <= self.bounds[0][0] or vp_x >= self.bounds[0][1]) or \
-               (vp_y <= self.bounds[1][0] or vp_y >= self.bounds[1][1]):
+               (vp_y <= self.bounds[1][0] or vp_y >= self.bounds[1][1]) or \
+               (vp_z <= self.bounds[2][0] or vp_z >= self.bounds[2][1]):
                 continue
             
             viewpoints.append({
@@ -710,6 +714,41 @@ class TopoTree:
         marker.id = 0
         marker.action = Marker.DELETEALL
         marker_array.markers.append(marker)
+        
+        # Add map bounds (consistent with graph mode)
+        bounds_marker = Marker()
+        bounds_marker.header.frame_id = self.world_frame_id
+        bounds_marker.header.stamp = rospy.Time.now()
+        bounds_marker.ns = "bounds"
+        bounds_marker.id = -1
+        bounds_marker.type = Marker.LINE_LIST
+        bounds_marker.action = Marker.ADD
+        bounds_marker.scale.x = 0.1
+        bounds_marker.color.a = 1.0
+        bounds_marker.color.r = 0.0
+        bounds_marker.color.g = 0.0
+        bounds_marker.color.b = 1.0
+
+        min_x, max_x = self.bounds[0]
+        min_y, max_y = self.bounds[1]
+        min_z, max_z = self.bounds[2]
+
+        p1 = self.create_point((min_x, min_y, min_z))
+        p2 = self.create_point((max_x, min_y, min_z))
+        p3 = self.create_point((max_x, max_y, min_z))
+        p4 = self.create_point((min_x, max_y, min_z))
+
+        p5 = self.create_point((min_x, min_y, max_z))
+        p6 = self.create_point((max_x, min_y, max_z))
+        p7 = self.create_point((max_x, max_y, max_z))
+        p8 = self.create_point((min_x, max_y, max_z))
+
+        bounds_marker.points = [
+            p1, p2, p2, p3, p3, p4, p4, p1,  # Bottom face
+            p5, p6, p6, p7, p7, p8, p8, p5,  # Top face
+            p1, p5, p2, p6, p3, p7, p4, p8,  # Vertical lines
+        ]
+        marker_array.markers.append(bounds_marker)
         
         # Visualize all candidates
         for idx, vp in enumerate(self.viewpoint_candidates):
@@ -1049,6 +1088,82 @@ class TopoTree:
             p1, p5, p2, p6, p3, p7, p4, p8,  # Vertical lines
         ]
         marker_array.markers.append(bounds_marker)
+
+        # Add selected viewpoint (goal node) if available
+        if self.goal_node is not None and self.goal_node in self.graph.nodes:
+            goal_data = self.graph.nodes[self.goal_node]
+            
+            # Selected viewpoint marker
+            selected_marker = Marker()
+            selected_marker.header.frame_id = self.world_frame_id
+            selected_marker.header.stamp = rospy.Time.now()
+            selected_marker.ns = "selected_viewpoint"
+            selected_marker.id = 0
+            selected_marker.type = Marker.SPHERE
+            selected_marker.action = Marker.ADD
+            selected_marker.pose.position.x = goal_data["pos"][0]
+            selected_marker.pose.position.y = goal_data["pos"][1]
+            selected_marker.pose.position.z = goal_data["pos"][2]
+            selected_marker.pose.orientation.w = 1.0
+            selected_marker.scale.x = 0.3
+            selected_marker.scale.y = 0.3
+            selected_marker.scale.z = 0.3
+            selected_marker.color.a = 1.0
+            selected_marker.color.r = 0.0
+            selected_marker.color.g = 1.0
+            selected_marker.color.b = 0.0
+            marker_array.markers.append(selected_marker)
+            
+            # Find the nearest frontier node to visualize as region center
+            nearest_frontier = None
+            min_dist = float('inf')
+            for fnode, fdata in self.frontier_graph.nodes(data=True):
+                if fdata.get("frontier", False):
+                    dist = np.linalg.norm(np.array(goal_data["pos"]) - np.array(fdata["pos"]))
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_frontier = fdata
+            
+            if nearest_frontier is not None:
+                # Region center marker
+                region_marker = Marker()
+                region_marker.header.frame_id = self.world_frame_id
+                region_marker.header.stamp = rospy.Time.now()
+                region_marker.ns = "region_center"
+                region_marker.id = 0
+                region_marker.type = Marker.SPHERE
+                region_marker.action = Marker.ADD
+                region_marker.pose.position.x = nearest_frontier["pos"][0]
+                region_marker.pose.position.y = nearest_frontier["pos"][1]
+                region_marker.pose.position.z = nearest_frontier["pos"][2]
+                region_marker.pose.orientation.w = 1.0
+                region_marker.scale.x = 0.2
+                region_marker.scale.y = 0.2
+                region_marker.scale.z = 0.2
+                region_marker.color.a = 0.8
+                region_marker.color.r = 1.0
+                region_marker.color.g = 0.0
+                region_marker.color.b = 1.0
+                marker_array.markers.append(region_marker)
+                
+                # Connecting line from viewpoint to region center
+                line_marker = Marker()
+                line_marker.header.frame_id = self.world_frame_id
+                line_marker.header.stamp = rospy.Time.now()
+                line_marker.ns = "viewpoint_region_line"
+                line_marker.id = 0
+                line_marker.type = Marker.LINE_STRIP
+                line_marker.action = Marker.ADD
+                line_marker.scale.x = 0.05
+                line_marker.color.a = 0.6
+                line_marker.color.r = 1.0
+                line_marker.color.g = 0.0
+                line_marker.color.b = 1.0
+                line_marker.points = [
+                    self.create_point(goal_data["pos"]),
+                    self.create_point(nearest_frontier["pos"])
+                ]
+                marker_array.markers.append(line_marker)
 
         # Add nodes as spheres
         for node, data in self.graph.nodes(data=True):
