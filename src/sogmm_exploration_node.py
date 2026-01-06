@@ -122,6 +122,8 @@ class SOGMMExplorationNode:
                 # Clamp z to map bounds
                 map_bounds = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
                 z_min, z_max = map_bounds[2]
+                z_min += 0.1
+                z_max -= 0.1
 
                 self.viewpoint.z = np.clip(next_waypoint[2], z_min, z_max)
             else:
