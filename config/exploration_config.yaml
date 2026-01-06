@@ -50,5 +50,6 @@ sogmm_grid_node:
 
 sogmm_exploration_node:
   exploration_distance_gain: 0.2
+  clamp_z: True
 
 simple_exploration: False 
