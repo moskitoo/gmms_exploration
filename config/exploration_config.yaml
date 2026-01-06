@@ -7,7 +7,7 @@ sogmm_node:
   kl_div_match_thresh: 100.0
 
   # Visualization Parameters
-  enable_visualization: true
+  enable_visualization: false
   visualization_scale: 2.0
   color_by: "confidence" # Options: intensity, confidence, stability, combined
   add_metric_text: false
@@ -51,4 +51,4 @@ sogmm_grid_node:
 sogmm_exploration_node:
   exploration_distance_gain: 0.2
 
-simple_exploration: True
+simple_exploration: False 
