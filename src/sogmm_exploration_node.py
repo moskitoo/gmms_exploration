@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
 
 import logging
-import threading
-from typing import Tuple
 
-import matplotlib.cm as cm
 import numpy as np
 import rospy
-import tf
-import tf2_ros
-from geometry_msgs.msg import PoseStamped, TransformStamped, Point
-from nav_msgs.msg import Odometry
-from rtree import index
-from std_msgs.msg import Int32
-from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import PoseStamped, Point
+from visualization_msgs.msg import Marker
 
-from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel, Grid
+from gmms_exploration.msg import Grid
 from gmms_exploration.srv import FlyTrajectory, GetViewpoint
 from scripts.topological_graph import TopoTree
 
@@ -53,11 +45,7 @@ class SOGMMExplorationNode:
         self.viewpoint_marker_pub = rospy.Publisher("viewpoint_marker", Marker, queue_size=1)
         self.path_marker_pub = rospy.Publisher("path_marker", Marker, queue_size=1)
 
-        self.viewpoint_list = [Point(0.0, -1.0, 1.0), Point(3.0, -1.0, 1.0), Point(3.0, 2.0, 1.0), Point(0.0, 2.0, 1.0)]
-        self.last_id = 0
-
         self.goal_waypoint_id = 6
-        # self.goal_waypoint_id = 0
 
         self.ftr_goal_tol_ = rospy.get_param('~ftr_goal_tol', 1.0)
         self.fail_pos_tol_ = rospy.get_param('~fail_pos_tol', 0.1)
@@ -146,12 +134,12 @@ class SOGMMExplorationNode:
             if self.reached_target:
                 self.current_waypoint_index = target_index + 1
                 self.consecutive_failures = 0
-                self.viewpoint_attempt_count = 0  # Reset for next viewpoint
+                self.viewpoint_attempt_count = 0
                 
-                # In simple mode, mark the region as visited when reaching the viewpoint
+                # Mark region as visited in simple mode
                 if self.simple_mode and hasattr(self.topo_tree, 'ranked_viewpoints'):
-                    if hasattr(self.topo_tree, 'current_viewpoint_rank') and \
-                       self.topo_tree.current_viewpoint_rank < len(self.topo_tree.ranked_viewpoints):
+                    if (hasattr(self.topo_tree, 'current_viewpoint_rank') and 
+                        self.topo_tree.current_viewpoint_rank < len(self.topo_tree.ranked_viewpoints)):
                         current_vp = self.topo_tree.ranked_viewpoints[self.topo_tree.current_viewpoint_rank]
                         if 'region_center' in current_vp:
                             self.topo_tree.mark_region_visited(current_vp['region_center'], current_vp['utility'])
@@ -226,18 +214,13 @@ class SOGMMExplorationNode:
             rospy.logdebug("New path received, reset and store it")
             self.path_to_ftr = path
             self.current_waypoint_index = 0
-            self.viewpoint_attempt_count = 0  # Reset attempt counter for new path
-            self.reached_target = True # Trigger execution of the new path
-            # rospy.logdebug(f"path to ftr: {self.path_to_ftr}")
+            self.viewpoint_attempt_count = 0
+            self.reached_target = True
             path_marker = self.create_path_marker(self.path_to_ftr)
             self.path_marker_pub.publish(path_marker)
 
     def mavros_pose_callback(self, msg):
-        """
-        Callback for PoseStamped messages - process directly without threading
-        """
-        # rospy.logdebug("Received pose message from MAVROS")
-
+        """Callback for PoseStamped messages."""
         self.robot_position = msg.pose.position
 
     @staticmethod
@@ -303,19 +286,17 @@ class SOGMMExplorationNode:
         return marker
 
     def run(self):
-        """
-        Main execution loop - keeps the node running
-        """
+        """Main execution loop."""
         rospy.loginfo("SOGMM Exploration Node is running.")
         
-        rate = rospy.Rate(1.0) 
+        rate = rospy.Rate(1.0)
 
         while not rospy.is_shutdown():
             try:
                 self.execute_exploration()
             except rospy.ServiceException as e:
                 rospy.logerr(f"Service call failed: {e}")
-                rospy.sleep(1.0) # Wait a bit before retrying
+                rospy.sleep(1.0)
             except rospy.ROSInterruptException:
                 break
             except Exception as e:
@@ -326,9 +307,7 @@ class SOGMMExplorationNode:
 
 
 def main():
-    """
-    Main function
-    """
+    """Main function."""
     try:
         node = SOGMMExplorationNode()
         node.run()

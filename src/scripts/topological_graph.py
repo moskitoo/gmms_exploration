@@ -31,7 +31,6 @@ class TopoTree:
         self.previous_position = None
         self.distance_threshold = distance_threshold  # meters
         self.odom_threshold = 0.1  # meters
-        # self.odom_frame = None
         self.odom = np.eye(4, 4)
         self.fov = np.radians(116.0)
         self.num_samples = 20
@@ -47,7 +46,6 @@ class TopoTree:
 
         rospy.logdebug(f"simple mode: {self.simple_mode}")
 
-        # self.exploration_distance_gain = 0.2
         self.exploration_distance_gain = exploration_distance_gain
 
         self.latest_cost_benefit = {}
@@ -80,8 +78,6 @@ class TopoTree:
             [self.bounds[1][0] - self.grid_offset, self.bounds[1][1] + self.grid_offset],
             [self.bounds[2][0] - self.grid_offset, self.bounds[2][1] + self.grid_offset]
         ]
-
-        # height=7.0, width=11, center_coorinates=(4.0, 0.0),
 
         # Publishers
         self.marker_pub = rospy.Publisher(
@@ -260,57 +256,6 @@ class TopoTree:
         
         rospy.logdebug("[lookup_odom] Completed")
 
-    def odom_callback(self, msg):
-        pass
-        # Extract position
-        position = msg.pose.pose.position
-        orientation = msg.pose.pose.orientation
-        self.odom_frame = msg.header.frame_id
-        self.odom[0, 3] = position.x
-        self.odom[1, 3] = position.y
-        self.odom[2, 3] = position.z
-        self.odom[:3, :3] = R.from_quat(
-            [orientation.x, orientation.y, orientation.z, orientation.w]
-        ).as_matrix()
-
-        # Create a unique ID for this position
-        current_node_id = self.node_id
-        if self.previous_position is not None:
-            distance = math.sqrt(
-                (position.x - self.previous_position[0]) ** 2
-                + (position.y - self.previous_position[1]) ** 2
-                + (position.z - self.previous_position[2]) ** 2
-            )
-            if distance >= self.distance_threshold or distance == 0.0:
-                # Add edge between previous node and current node if threshold is met
-                self.graph.add_node(
-                    current_node_id,
-                    pos=(position.x, position.y, position.z),
-                    predicted=False,
-                    utility=0.0,
-                    frontier=False,
-                )
-                self.graph.add_edge(self.odom_id, self.node_id)
-                self.previous_position = (position.x, position.y, position.z)
-                self.odom_id = current_node_id
-                self.node_id += 1
-        else:
-            self.graph.add_node(
-                current_node_id,
-                pos=(position.x, position.y, position.z),
-                predicted=False,
-                utility=0.0,
-                frontier=False,
-            )
-            self.previous_position = (position.x, position.y, position.z)
-            self.node_id += 1
-
-        # Publish the graph as markers
-        self.publish_graph_markers()
-
-    def point_callback(self, msg):
-        pass
-
     def spin(self, point, utility, goal_tol=0.5, fail_pos_tol=0.1, fail_yaw_tol=0.1):
         if self.lookup_odom() == -1:
             rospy.logerr("[Topo graph] Failed to lookup odom!")
@@ -376,7 +321,7 @@ class TopoTree:
                 continue
             
             # Generate viewpoints around the region center
-            viewpoints = self.generate_viewpoints_simple(p, utility[i])
+            viewpoints = self.generate_viewpoints_around_region(p, utility[i], return_dict=True)
             self.viewpoint_candidates.extend(viewpoints)
         
         if dead_region_count > 0:
@@ -567,38 +512,57 @@ class TopoTree:
         
         return region_id in self.dead_regions
     
-    def generate_viewpoints_simple(self, region_center, utility):
+    def generate_viewpoints_around_region(self, region_center, utility, return_dict=True):
         """
-        Generate viewpoints around a region center (similar to add_frontier_candidate)
-        but return as list instead of adding to graph.
-        """
-        viewpoints = []
+        Generate viewpoints around a region center.
         
+        Args:
+            region_center: 3D coordinates of the frontier region
+            utility: Utility value for this region
+            return_dict: If True, return list of dicts (for simple mode),
+                        if False, returns (positions, distances) for graph mode
+        
+        Returns:
+            If return_dict=True: List of viewpoint dictionaries
+            If return_dict=False: Tuple of (sampled_points array, distances list)
+        """
         dist = self.shortest_visible_distance(region_center, self.fov)
         angle = np.linspace(0, 2 * np.pi, self.num_samples)
+        
+        viewpoints = [] if return_dict else None
+        sampled_points = None if return_dict else np.zeros((self.num_samples, 3))
+        dists = None if return_dict else []
         
         for i in range(self.num_samples):
             vp_x = region_center[0] + np.cos(angle[i]) * dist
             vp_y = region_center[1] + np.sin(angle[i]) * dist
-            vp_z = region_center[2]
+            vp_z = np.clip(region_center[2], self.bounds[2][0]+0.1, self.bounds[2][1]-0.1)
             
-            # Clamp z to map bounds
-            vp_z = np.clip(vp_z, self.bounds[2][0]+0.1, self.bounds[2][1]-0.1)
+            vp_pos = np.array([vp_x, vp_y, vp_z])
             
-            # Check bounds - viewpoints must stay within original bounds (not extended)
-            # This ensures robot doesn't navigate outside safe area
-            if (vp_x <= self.bounds[0][0] or vp_x >= self.bounds[0][1]) or \
-               (vp_y <= self.bounds[1][0] or vp_y >= self.bounds[1][1]) or \
-               (vp_z <= self.bounds[2][0] or vp_z >= self.bounds[2][1]):
+            # Check bounds - viewpoints must stay within original bounds
+            if not self.is_within_bounds(vp_pos, use_extended=False):
                 continue
             
-            viewpoints.append({
-                'pos': np.array([vp_x, vp_y, vp_z]),
-                'utility': utility,
-                'region_center': region_center
-            })
+            if return_dict:
+                viewpoints.append({
+                    'pos': vp_pos,
+                    'utility': utility,
+                    'region_center': region_center
+                })
+            else:
+                sampled_points[i] = vp_pos
+                # Calculate distances for graph mode
+                _dists = [
+                    (node, np.linalg.norm(np.array(data["pos"]) - vp_pos))
+                    for (node, data) in self.graph.nodes(data=True)
+                    if not data["predicted"]
+                ]
+                if _dists:
+                    min_node, min_dist = min(_dists, key=lambda x: x[1])
+                    dists.append((min_node, min_dist, i, np.linalg.norm(vp_pos[:2] - region_center[:2])))
         
-        return viewpoints
+        return viewpoints if return_dict else (sampled_points, dists)
 
     def select_best_viewpoint_simple(self, exclude_positions=None):
         """
@@ -979,24 +943,13 @@ class TopoTree:
                 if dist < 4.0:
                     data["utility"] = 0.0
 
-    def print_graph(self):
-        print("---------------------------------------------")
-        for node, data in self.graph.nodes(data=True):
-            print(node, data)
-
-        print(self.graph.edges.data())
-        print("||---------------------------------------------||")
-
     def add_frontier_candidate(self, point, utility):
-        # print("add frontier candidate!!!")
-        # self.print_graph()
         # Note: This is called from spin_graph_mode which already holds the lock
         if self.graph.number_of_nodes() == 0:
             return
-        # check if point is inside boundary - use extended bounds for region centers
-        if (point[0] >= self.extended_bounds[0][1] or point[0] <= self.extended_bounds[0][0]) or (
-            point[1] >= self.extended_bounds[1][1] or point[1] <= self.extended_bounds[1][0]
-        ):
+        
+        # Check if point is inside boundary - use extended bounds for region centers
+        if not self.is_within_bounds(point, use_extended=True):
             return
 
         dist = self.shortest_visible_distance(point, self.fov)
@@ -1073,16 +1026,7 @@ class TopoTree:
         min_id = min(enumerate(dists), key=lambda x: x[1][3])[0]
         for min_id, _ in enumerate(dists):
             # Skip viewpoints outside bounds (should rarely happen after clamping)
-            if (
-                sampled_points[min_id, 0] < self.bounds[0][0]
-                or sampled_points[min_id, 0] > self.bounds[0][1]
-            ) or (
-                sampled_points[min_id, 1] < self.bounds[1][0]
-                or sampled_points[min_id, 1] > self.bounds[1][1]
-            ) or (
-                sampled_points[min_id, 2] < self.bounds[2][0]
-                or sampled_points[min_id, 2] > self.bounds[2][1]
-            ):
+            if not self.is_within_bounds(sampled_points[min_id], use_extended=False):
                 continue
             self.node_id += 1
             self.graph.add_node(
@@ -1412,6 +1356,58 @@ class TopoTree:
         point.y = pos[1]
         point.z = pos[2]
         return point
+
+    def is_within_bounds(self, point, use_extended=False):
+        """Check if a point is within map bounds.
+        
+        Args:
+            point: 3D point (x, y, z)
+            use_extended: If True, use extended bounds (for region centers),
+                         otherwise use original bounds (for viewpoints)
+        Returns:
+            bool: True if within bounds
+        """
+        bounds = self.extended_bounds if use_extended else self.bounds
+        return not ((point[0] >= bounds[0][1] or point[0] <= bounds[0][0]) or
+                    (point[1] >= bounds[1][1] or point[1] <= bounds[1][0]))
+
+    def create_bounds_marker(self):
+        """Create map bounds visualization marker."""
+        if self.world_frame_id is None:
+            return None
+        
+        bounds_marker = Marker()
+        bounds_marker.header.frame_id = self.world_frame_id
+        bounds_marker.header.stamp = rospy.Time.now()
+        bounds_marker.ns = "bounds"
+        bounds_marker.id = -1
+        bounds_marker.type = Marker.LINE_LIST
+        bounds_marker.action = Marker.ADD
+        bounds_marker.scale.x = 0.1
+        bounds_marker.color.a = 1.0
+        bounds_marker.color.r = 0.0
+        bounds_marker.color.g = 0.0
+        bounds_marker.color.b = 1.0
+
+        min_x, max_x = self.bounds[0]
+        min_y, max_y = self.bounds[1]
+        min_z, max_z = self.bounds[2]
+
+        p1 = self.create_point((min_x, min_y, min_z))
+        p2 = self.create_point((max_x, min_y, min_z))
+        p3 = self.create_point((max_x, max_y, min_z))
+        p4 = self.create_point((min_x, max_y, min_z))
+        p5 = self.create_point((min_x, min_y, max_z))
+        p6 = self.create_point((max_x, min_y, max_z))
+        p7 = self.create_point((max_x, max_y, max_z))
+        p8 = self.create_point((min_x, max_y, max_z))
+
+        bounds_marker.points = [
+            p1, p2, p2, p3, p3, p4, p4, p1,
+            p5, p6, p6, p7, p7, p8, p8, p5,
+            p1, p5, p2, p6, p3, p7, p4, p8,
+        ]
+        return bounds_marker
 
 
 if __name__ == "__main__":
