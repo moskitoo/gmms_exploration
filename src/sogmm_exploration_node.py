@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+import time
 
 import numpy as np
 import rospy
@@ -55,6 +56,12 @@ class SOGMMExplorationNode:
         self.consecutive_failures = 0  # Track consecutive trajectory failures for current viewpoint
         self.max_retries_per_viewpoint = 2  # Number of times to retry same viewpoint
         self.viewpoint_attempt_count = 0  # Track attempts on current viewpoint
+
+        # Timing statistics
+        self.topotree_path_times = []  # Time for topotree.spin() path planning
+
+        # Register shutdown hook
+        rospy.on_shutdown(self.shutdown_hook)
 
     def execute_exploration(self):
         if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr) and  self.current_waypoint_index >= 0:
@@ -202,7 +209,12 @@ class SOGMMExplorationNode:
         rospy.logdebug(f"received grid means number: {means.shape[0]}")
 
         if len(uncertainties) > 0:
+            # Measure time for path planning
+            start_time = time.time()
             path = self.topo_tree.spin(means, uncertainties, self.ftr_goal_tol_, self.fail_pos_tol_, self.fail_yaw_tol_)
+            topotree_time = time.time() - start_time
+            self.topotree_path_times.append(topotree_time)
+            rospy.loginfo(f"TopoTree path planning took {topotree_time:.4f}s")
         else:
             rospy.logerr("empty grid input. path wont be generated")
             return
@@ -284,6 +296,28 @@ class SOGMMExplorationNode:
             marker.points.append(p)
 
         return marker
+
+    def shutdown_hook(self):
+        """
+        Called when node is shutting down. Logs timing statistics.
+        """
+        rospy.loginfo("="*80)
+        rospy.loginfo("SOGMM Exploration Node Shutdown - Timing Statistics Summary")
+        rospy.loginfo("="*80)
+        
+        if len(self.topotree_path_times) > 0:
+            rospy.loginfo(f"Total path planning iterations: {len(self.topotree_path_times)}")
+            rospy.loginfo("")
+            
+            path_mean = np.mean(self.topotree_path_times)
+            path_std = np.std(self.topotree_path_times)
+            rospy.loginfo(f"TopoTree Path Planning Time:")
+            rospy.loginfo(f"  Mean: {path_mean:.4f}s")
+            rospy.loginfo(f"  Std:  {path_std:.4f}s")
+        else:
+            rospy.loginfo("No timing data collected (no path planning performed)")
+        
+        rospy.loginfo("="*80)
 
     def run(self):
         """Main execution loop."""

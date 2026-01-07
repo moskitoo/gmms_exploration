@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+import time
 from typing import List, Tuple
 
 import matplotlib.cm as cm
@@ -399,6 +400,9 @@ class SOGMMGridNode:
             grid_offset=self.grid_offset
         )
 
+        # Timing statistics
+        self.processing_times = []
+
         # Subscribers
         if self.static_cluster_center:
             self.gmm_sub = rospy.Subscriber(
@@ -433,6 +437,9 @@ class SOGMMGridNode:
             "/starling1/mpa/grid", Grid, queue_size=1
         )
 
+        # Register shutdown hook
+        rospy.on_shutdown(self.shutdown_hook)
+
     def gmm_callback(self, msg: GaussianMixtureModel):
         self.process_gmm(msg)
 
@@ -453,6 +460,8 @@ class SOGMMGridNode:
             rospy.logdebug("Skipping complete GMM (using updated GMM instead)")
 
     def process_gmm(self, msg: GaussianMixtureModel):
+        start_time = time.time()
+        
         gmm = msg.components
         n_components = len(gmm)
 
@@ -482,6 +491,11 @@ class SOGMMGridNode:
                 self.exploration_grid.get_means_vis(means, "map", msg.header.stamp)
             )
 
+        processing_time = time.time() - start_time
+        self.processing_times.append(processing_time)
+        
+        rospy.loginfo(f"Processed grid update with {n_components} components in {processing_time:.4f}s")
+
         rospy.logdebug(f"First 5 means from measurement: {means[:5]}")
         rospy.logdebug(f"First 5 uncertainties: {uct[:5]}")
         rospy.logdebug(f"Min/Max grid uncertainty after update: "
@@ -497,6 +511,28 @@ class SOGMMGridNode:
         goal.y = y
         goal.z = 1.0
         return GetViewpointResponse(goal)
+
+    def shutdown_hook(self):
+        """
+        Called when node is shutting down. Logs timing statistics.
+        """
+        rospy.loginfo("="*80)
+        rospy.loginfo("SOGMM Grid Node Shutdown - Timing Statistics Summary")
+        rospy.loginfo("="*80)
+        
+        if len(self.processing_times) > 0:
+            rospy.loginfo(f"Total iterations processed: {len(self.processing_times)}")
+            rospy.loginfo("")
+            
+            proc_mean = np.mean(self.processing_times)
+            proc_std = np.std(self.processing_times)
+            rospy.loginfo(f"Full Processing Time (GMM → Grid):")
+            rospy.loginfo(f"  Mean: {proc_mean:.4f}s")
+            rospy.loginfo(f"  Std:  {proc_std:.4f}s")
+        else:
+            rospy.loginfo("No timing data collected (no iterations processed)")
+        
+        rospy.loginfo("="*80)
 
     def run(self):
         """
