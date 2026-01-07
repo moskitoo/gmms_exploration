@@ -19,6 +19,7 @@ import heapq
 import copy
 import tf2_ros
 import threading
+from collections import deque
 
 
 class TopoTree:
@@ -32,6 +33,15 @@ class TopoTree:
         self.distance_threshold = distance_threshold  # meters
         self.odom_threshold = 0.1  # meters
         self.loop_closure_threshold = loop_closure_threshold  # Connect to nodes within this distance
+        
+        # Hybrid loop closure parameters
+        self.max_loop_closure_edges = rospy.get_param('~max_loop_closure_edges', 5)  # Max additional edges per node
+        self.min_graph_distance_for_loop = rospy.get_param('~min_graph_distance_for_loop', 3)  # Min graph hops to consider loop
+        self.recent_nodes_window = rospy.get_param('~recent_nodes_window', 10)  # Skip connecting to last N nodes
+        
+        # Track recently visited nodes for avoiding redundant connections
+        self.recent_nodes = deque(maxlen=self.recent_nodes_window)
+        
         self.odom = np.eye(4, 4)
         self.fov = np.radians(116.0)
         self.num_samples = 20
@@ -215,15 +225,43 @@ class TopoTree:
                             frontier=False,
                         )
                         
-                        # Connect to ALL nearby nodes within loop_closure_threshold for loop closure
-                        edges_added = 0
-                        for node_id, dist in distances:
-                            if dist <= self.loop_closure_threshold:
-                                self.graph.add_edge(node_id, current_node_id)
-                                edges_added += 1
-                                rospy.logdebug(f"[lookup_odom] Connected node {current_node_id} to node {node_id} (dist: {dist:.3f}m)")
+                        # Hybrid loop closure: Always connect to nearest + smart loop closures
+                        # Step 1: Always connect to the nearest node
+                        self.graph.add_edge(_min[0], current_node_id)
+                        rospy.logdebug(f"[lookup_odom] Connected node {current_node_id} to nearest node {_min[0]} (dist: {_min[1]:.3f}m)")
+                        edges_added = 1
                         
-                        rospy.loginfo(f"[lookup_odom] Node {current_node_id} connected to {edges_added} nearby nodes for loop closure")
+                        # Step 2: Add smart loop closures with constraints
+                        loop_closure_candidates = []
+                        for node_id, dist in distances:
+                            # Skip the nearest node (already connected) and nodes beyond threshold
+                            if node_id == _min[0] or dist > self.loop_closure_threshold:
+                                continue
+                            
+                            # Check if this node is in recent history (avoid redundant short-term connections)
+                            if node_id in self.recent_nodes:
+                                continue
+                            
+                            # Check graph distance to ensure it's actually a loop closure
+                            try:
+                                graph_dist = nx.shortest_path_length(self.graph, source=node_id, target=_min[0])
+                                if graph_dist >= self.min_graph_distance_for_loop:
+                                    loop_closure_candidates.append((node_id, dist, graph_dist))
+                            except nx.NetworkXNoPath:
+                                # No path exists - definitely a loop closure candidate
+                                loop_closure_candidates.append((node_id, dist, float('inf')))
+                        
+                        # Sort by spatial distance and add up to max_loop_closure_edges
+                        loop_closure_candidates.sort(key=lambda x: x[1])
+                        for node_id, dist, graph_dist in loop_closure_candidates[:self.max_loop_closure_edges - 1]:
+                            self.graph.add_edge(node_id, current_node_id)
+                            edges_added += 1
+                            rospy.loginfo(f"[lookup_odom] LOOP CLOSURE: Connected node {current_node_id} to node {node_id} (spatial_dist: {dist:.3f}m, graph_dist: {graph_dist})")
+                        
+                        # Add current node to recent history
+                        self.recent_nodes.append(current_node_id)
+                        
+                        rospy.loginfo(f"[lookup_odom] Node {current_node_id} connected to {edges_added} nodes (1 nearest + {edges_added-1} loop closures)")
                         self.odom_id = current_node_id
                     else:
                         rospy.logdebug(f"[lookup_odom] Skipping node addition - too close to existing node")
@@ -910,9 +948,16 @@ class TopoTree:
         queue = [(0, 0, start)]
         
         iterations = 0
-        while queue:
+        max_iterations = 100000  # Safety limit
+        nodes_with_utility = 0
+        
+        while queue and iterations < max_iterations:
             iterations += 1
+            if iterations % 1000 == 0:
+                rospy.logdebug(f"[dijkstra] Iteration {iterations}, queue size: {len(queue)}, nodes with utility: {nodes_with_utility}")
+            
             current_utility, current_distance, current_node = heapq.heappop(queue)
+            
             for neighbor, attr in self.graph[current_node].items():
                 weight = self.cost(current_node, neighbor)
                 distance = current_distance + weight
@@ -926,6 +971,8 @@ class TopoTree:
                 if (
                     utility >= utilities[neighbor]
                 ):  # and distance <= distances[neighbor]:
+                    if utility > 0 and utilities[neighbor] == 0:
+                        nodes_with_utility += 1
                     utilities[neighbor] = utility
                     distances[neighbor] = distance
                     if distance > 0.0:
@@ -934,6 +981,9 @@ class TopoTree:
                         )
                     paths[neighbor] = paths[current_node] + [neighbor]
                     heapq.heappush(queue, (-utility, distance, neighbor))
+        
+        if iterations >= max_iterations:
+            rospy.logwarn(f"[dijkstra] Reached max iterations limit ({max_iterations})")
         
         rospy.logdebug(f"[dijkstra] Completed {iterations} iterations")
         rospy.logdebug(f"[dijkstra] Nodes with non-zero utility: {sum(1 for v in utilities.values() if v > 0)}")
