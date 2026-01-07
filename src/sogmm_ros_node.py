@@ -1262,23 +1262,23 @@ class SOGMMROSNode:
         """Set marker color based on visualization mode."""
         
         # Highlight max uncertainty component
-        if i == self.max_uct_id:
-            marker.color.r = 0.0
-            marker.color.g = 1.0
-            marker.color.b = 0.0
-            marker.color.a = 1.0
-            marker.scale.x *= self.MAX_UCT_SCALE_FACTOR
-            marker.scale.y *= self.MAX_UCT_SCALE_FACTOR
-            marker.scale.z *= self.MAX_UCT_SCALE_FACTOR
-            return
+        # if i == self.max_uct_id:
+        #     marker.color.r = 0.0
+        #     marker.color.g = 1.0
+        #     marker.color.b = 0.0
+        #     marker.color.a = 1.0
+        #     marker.scale.x *= self.MAX_UCT_SCALE_FACTOR
+        #     marker.scale.y *= self.MAX_UCT_SCALE_FACTOR
+        #     marker.scale.z *= self.MAX_UCT_SCALE_FACTOR
+        #     return
 
         # Highlight recently updated components
-        if updated_marker:
-            marker.color.r = 0.0
-            marker.color.g = 1.0
-            marker.color.b = 0.9
-            marker.color.a = 1.0
-            return
+        # if updated_marker:
+        #     marker.color.r = 0.0
+        #     marker.color.g = 1.0
+        #     marker.color.b = 0.9
+        #     marker.color.a = 1.0
+        #     return
 
         # Color based on selected visualization mode
         if self.color_by == "confidence":
