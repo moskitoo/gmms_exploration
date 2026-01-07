@@ -30,8 +30,9 @@ class SOGMMExplorationNode:
 
         self.exploration_distance_gain = rospy.get_param('~exploration_distance_gain', 0.1)
         self.distance_threshold = rospy.get_param('~distance_threshold', 0.5)
+        self.loop_closure_threshold = rospy.get_param('~loop_closure_threshold', 1.5)
 
-        self.topo_tree = TopoTree(simple_mode=self.simple_mode, exploration_distance_gain=self.exploration_distance_gain, distance_threshold=self.distance_threshold)
+        self.topo_tree = TopoTree(simple_mode=self.simple_mode, exploration_distance_gain=self.exploration_distance_gain, distance_threshold=self.distance_threshold, loop_closure_threshold=self.loop_closure_threshold)
 
         self.fly_trajectory_client = rospy.ServiceProxy("/starling1/fly_trajectory", FlyTrajectory)
         self.get_viewpoint_client = rospy.ServiceProxy("get_viewpoint", GetViewpoint)
@@ -57,6 +58,16 @@ class SOGMMExplorationNode:
         self.viewpoint_attempt_count = 0  # Track attempts on current viewpoint
 
     def execute_exploration(self):
+        rospy.logdebug(f"[execute_exploration] path_to_ftr is not None: {self.path_to_ftr is not None}")
+        if hasattr(self, 'current_waypoint_index'):
+            rospy.logdebug(f"[execute_exploration] current_waypoint_index: {self.current_waypoint_index}")
+            if self.path_to_ftr is not None:
+                rospy.logdebug(f"[execute_exploration] path length: {len(self.path_to_ftr)}")
+                rospy.logdebug(f"[execute_exploration] current_waypoint_index < len(path): {self.current_waypoint_index < len(self.path_to_ftr)}")
+                rospy.logdebug(f"[execute_exploration] current_waypoint_index >= 0: {self.current_waypoint_index >= 0}")
+        else:
+            rospy.logdebug("[execute_exploration] current_waypoint_index not initialized")
+        
         if self.path_to_ftr is not None and self.current_waypoint_index < len(self.path_to_ftr) and  self.current_waypoint_index >= 0:
 
             if not hasattr(self, 'robot_position'):

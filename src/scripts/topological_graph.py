@@ -22,7 +22,7 @@ import threading
 
 
 class TopoTree:
-    def __init__(self, simple_mode: bool = False, exploration_distance_gain: float=0.1, distance_threshold: float=0.5):
+    def __init__(self, simple_mode: bool = False, exploration_distance_gain: float=0.1, distance_threshold: float=0.5, loop_closure_threshold: float=1.5):
         # Initialize graph
         self.graph = nx.Graph()
         self.frontier_graph = nx.Graph()
@@ -31,6 +31,7 @@ class TopoTree:
         self.previous_position = None
         self.distance_threshold = distance_threshold  # meters
         self.odom_threshold = 0.1  # meters
+        self.loop_closure_threshold = loop_closure_threshold  # Connect to nodes within this distance
         self.odom = np.eye(4, 4)
         self.fov = np.radians(116.0)
         self.num_samples = 20
@@ -179,7 +180,7 @@ class TopoTree:
                 rospy.logdebug(f"[lookup_odom] Distance from previous: {distance:.3f}m (threshold: {self.distance_threshold}m)")
                 
                 if distance >= self.distance_threshold or distance == 0.0:
-                    rospy.logdebug("[lookup_odom] Distance threshold met - adding node and edge")
+                    rospy.logdebug("[lookup_odom] Distance threshold met - adding node and edges")
                     # Add edge between previous node and current node if threshold is met
                     pos_np = np.array(
                         [
@@ -188,16 +189,20 @@ class TopoTree:
                             transform.transform.translation.z,
                         ]
                     )
+                    
+                    # Find all non-predicted nodes and their distances
                     distances = [
                         (n, np.linalg.norm(pos_np - np.array(d["pos"])))
                         for (n, d) in self.graph.nodes(data=True)
                         if d["predicted"] == False
                     ]
+                    
+                    # Find nearest node
                     _min = min(distances, key=lambda x: x[1])
                     rospy.logdebug(f"[lookup_odom] Nearest node: {_min[0]} at distance {_min[1]:.3f}m (threshold: {self.odom_threshold}m)")
                     
                     if _min[1] > self.odom_threshold:
-                        rospy.logdebug(f"[lookup_odom] Adding new node {current_node_id} and edge to node {_min[0]}")
+                        rospy.logdebug(f"[lookup_odom] Adding new node {current_node_id}")
                         self.graph.add_node(
                             current_node_id,
                             pos=(
@@ -209,7 +214,16 @@ class TopoTree:
                             utility=0.0,
                             frontier=False,
                         )
-                        self.graph.add_edge(_min[0], self.node_id)
+                        
+                        # Connect to ALL nearby nodes within loop_closure_threshold for loop closure
+                        edges_added = 0
+                        for node_id, dist in distances:
+                            if dist <= self.loop_closure_threshold:
+                                self.graph.add_edge(node_id, current_node_id)
+                                edges_added += 1
+                                rospy.logdebug(f"[lookup_odom] Connected node {current_node_id} to node {node_id} (dist: {dist:.3f}m)")
+                        
+                        rospy.loginfo(f"[lookup_odom] Node {current_node_id} connected to {edges_added} nearby nodes for loop closure")
                         self.odom_id = current_node_id
                     else:
                         rospy.logdebug(f"[lookup_odom] Skipping node addition - too close to existing node")
@@ -360,7 +374,9 @@ class TopoTree:
         Original graph-based RT-GuIDE approach
         """
         with self.graph_lock:
+            rospy.logdebug(f"[spin_graph_mode] Graph nodes: {self.graph.number_of_nodes()}, edges: {self.graph.number_of_edges()}")
             if self.graph.number_of_nodes() == 0:
+                rospy.logwarn("[spin_graph_mode] Graph has no nodes, returning None")
                 return None
             
             if self.path is not None:
@@ -400,7 +416,9 @@ class TopoTree:
             for i, p in enumerate(point):
                 # p = cam2world[:3,:3] @ p + cam2world[:3,3]
                 self.add_frontier_candidate(p, utility[i])
+            rospy.logdebug(f"[spin_graph_mode] After adding frontiers - Graph nodes: {self.graph.number_of_nodes()}, edges: {self.graph.number_of_edges()}")
             self.prune_frontiers()
+            rospy.logdebug(f"[spin_graph_mode] After pruning - Graph nodes: {self.graph.number_of_nodes()}, edges: {self.graph.number_of_edges()}")
             odom = self.odom_pos[:3]
             dists = [
                 (node, np.linalg.norm((odom) - np.array(data["pos"])))
@@ -408,7 +426,13 @@ class TopoTree:
                 if data["frontier"] == False and data["predicted"] == False
             ]
 
+            rospy.logdebug(f"[spin_graph_mode] Found {len(dists)} non-predicted, non-frontier nodes")
+            if not dists:
+                rospy.logwarn("[spin_graph_mode] No valid start nodes found, returning None")
+                return None
+            
             start = min(dists, key=lambda x: x[1])
+            rospy.logdebug(f"[spin_graph_mode] Start node: {start[0]}, distance to odom: {start[1]:.3f}m")
             odom_dists = [
                 (node, np.linalg.norm((odom) - np.array(data["pos"])))
                 for node, data in self.graph.nodes(data=True)
@@ -424,7 +448,21 @@ class TopoTree:
             self.latest_cost_benefit = d, u, c
             # self.publish_cost_markers()
 
-            max_utility_path = max(c, key=c.get)
+            rospy.logdebug(f"[spin_graph_mode] Dijkstra returned {len(c)} nodes with cost_benefit")
+            if not c:
+                rospy.logwarn("[spin_graph_mode] No cost_benefit values from Dijkstra, returning None")
+                return None
+            
+            # Filter out nodes with zero or negative cost_benefit
+            valid_nodes = {k: v for k, v in c.items() if v > 0}
+            rospy.logdebug(f"[spin_graph_mode] Found {len(valid_nodes)} nodes with positive cost_benefit")
+            
+            if not valid_nodes:
+                rospy.logwarn("[spin_graph_mode] No nodes with positive cost_benefit, returning None")
+                return None
+            
+            max_utility_path = max(valid_nodes, key=valid_nodes.get)
+            rospy.logdebug(f"[spin_graph_mode] Selected path to node {max_utility_path} with cost_benefit: {valid_nodes[max_utility_path]:.3f}")
 
             self.path = np.zeros((len(p[max_utility_path]), 3))
             self.goal_node = p[max_utility_path][-1]
@@ -861,13 +899,19 @@ class TopoTree:
         )
 
     def dijkstra(self, start):
+        rospy.logdebug(f"[dijkstra] Starting from node {start}")
+        rospy.logdebug(f"[dijkstra] Total graph nodes: {len(self.graph.nodes())}")
+        
         distances = {node: 0 for node in self.graph}
         utilities = {node: 0 for node in self.graph}
         cost_benefit = {node: 0 for node in self.graph}
         paths = {node: [start] for node in self.graph}
         distances[start] = 0
         queue = [(0, 0, start)]
+        
+        iterations = 0
         while queue:
+            iterations += 1
             current_utility, current_distance, current_node = heapq.heappop(queue)
             for neighbor, attr in self.graph[current_node].items():
                 weight = self.cost(current_node, neighbor)
@@ -890,6 +934,11 @@ class TopoTree:
                         )
                     paths[neighbor] = paths[current_node] + [neighbor]
                     heapq.heappush(queue, (-utility, distance, neighbor))
+        
+        rospy.logdebug(f"[dijkstra] Completed {iterations} iterations")
+        rospy.logdebug(f"[dijkstra] Nodes with non-zero utility: {sum(1 for v in utilities.values() if v > 0)}")
+        rospy.logdebug(f"[dijkstra] Nodes with non-zero cost_benefit: {sum(1 for v in cost_benefit.values() if v > 0)}")
+        
         return distances, utilities, paths, cost_benefit
 
     def shortest_visible_distance(self, point, fov):
