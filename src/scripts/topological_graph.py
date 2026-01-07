@@ -32,14 +32,14 @@ class TopoTree:
         self.previous_position = None
         self.distance_threshold = distance_threshold  # meters
         self.odom_threshold = 0.1  # meters
-        self.loop_closure_threshold = loop_closure_threshold  # Connect to nodes within this distance
+        self.loop_closure_threshold = loop_closure_threshold  # Spatial distance for loop closure
         
         # Hybrid loop closure parameters
-        self.max_loop_closure_edges = rospy.get_param('~max_loop_closure_edges', 5)  # Max additional edges per node
-        self.min_graph_distance_for_loop = rospy.get_param('~min_graph_distance_for_loop', 3)  # Min graph hops to consider loop
-        self.recent_nodes_window = rospy.get_param('~recent_nodes_window', 10)  # Skip connecting to last N nodes
+        self.max_loop_closure_edges = rospy.get_param('~max_loop_closure_edges', 5)  # Max total edges per node
+        self.min_graph_distance_for_loop = rospy.get_param('~min_graph_distance_for_loop', 3)  # Min graph hops to be a loop
+        self.recent_nodes_window = rospy.get_param('~recent_nodes_window', 10)  # Skip last N nodes
         
-        # Track recently visited nodes for avoiding redundant connections
+        # Track recently visited nodes
         self.recent_nodes = deque(maxlen=self.recent_nodes_window)
         
         self.odom = np.eye(4, 4)
@@ -227,22 +227,23 @@ class TopoTree:
                         
                         # Hybrid loop closure: Always connect to nearest + smart loop closures
                         # Step 1: Always connect to the nearest node
-                        self.graph.add_edge(_min[0], current_node_id)
+                        self.graph.add_edge(_min[0], self.node_id)
                         rospy.logdebug(f"[lookup_odom] Connected node {current_node_id} to nearest node {_min[0]} (dist: {_min[1]:.3f}m)")
                         edges_added = 1
                         
-                        # Step 2: Add smart loop closures with constraints
+                        # Step 2: Add smart loop closures - nodes that are spatially close but graph-distance far
+                        # This detects when we return to the same area via a different route
                         loop_closure_candidates = []
                         for node_id, dist in distances:
                             # Skip the nearest node (already connected) and nodes beyond threshold
                             if node_id == _min[0] or dist > self.loop_closure_threshold:
                                 continue
                             
-                            # Check if this node is in recent history (avoid redundant short-term connections)
+                            # Skip recently visited nodes (avoid redundant local connections)
                             if node_id in self.recent_nodes:
                                 continue
                             
-                            # Check graph distance to ensure it's actually a loop closure
+                            # Check graph distance - if high, it's a different branch (loop closure!)
                             try:
                                 graph_dist = nx.shortest_path_length(self.graph, source=node_id, target=_min[0])
                                 if graph_dist >= self.min_graph_distance_for_loop:
@@ -251,12 +252,12 @@ class TopoTree:
                                 # No path exists - definitely a loop closure candidate
                                 loop_closure_candidates.append((node_id, dist, float('inf')))
                         
-                        # Sort by spatial distance and add up to max_loop_closure_edges
+                        # Sort by spatial distance and add up to max_loop_closure_edges total
                         loop_closure_candidates.sort(key=lambda x: x[1])
                         for node_id, dist, graph_dist in loop_closure_candidates[:self.max_loop_closure_edges - 1]:
                             self.graph.add_edge(node_id, current_node_id)
                             edges_added += 1
-                            rospy.loginfo(f"[lookup_odom] LOOP CLOSURE: Connected node {current_node_id} to node {node_id} (spatial_dist: {dist:.3f}m, graph_dist: {graph_dist})")
+                            rospy.loginfo(f"[lookup_odom] LOOP CLOSURE: Connected node {current_node_id} to node {node_id} (spatial: {dist:.3f}m, graph_dist: {graph_dist})")
                         
                         # Add current node to recent history
                         self.recent_nodes.append(current_node_id)
