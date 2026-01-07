@@ -1,6 +1,12 @@
+# General Settings
+omp_num_threads: 8
+
 sogmm_node:
   # Logging
   log_level: "DEBUG"  # Options: DEBUG, INFO, WARN, ERROR, FATAL
+  
+  # Hardware Selection
+  use_gpu: true  # Options: true (GPU), false (CPU)
   
   # SOGMM Algorithm Parameters
   bandwidth: 0.02
@@ -41,9 +47,9 @@ sogmm_node:
   publish_whole_gmm: true
 
 # (x,y) bounds
-# map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 2.0]] # hidden obstacle
+map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 2.0]] # hidden obstacle
 # map_bounds: [[-3.5, 11.25], [-6., 5.8], [0.0, 3.0]] # big empty arena
-map_bounds: [[-0.65, 9.0], [-1.0, 4.5], [-0.7, 1.5]]  # custom arena (cluttered)
+# map_bounds: [[-0.65, 9.0], [-1.0, 4.5], [-0.7, 1.5]]  # custom arena (cluttered)
 
 sogmm_grid_node:
   grid_cell_size: 2.0

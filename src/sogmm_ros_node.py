@@ -6,26 +6,29 @@ This node subscribes to PointCloud2 messages, processes them using SOGMM,
 and publishes visualization markers for RViz.
 """
 
+import os
 import threading
 import time
 import traceback
+from typing import List, Optional
 
 import matplotlib.cm as cm
 import numpy as np
 import ros_numpy
 import rospy
 import tf2_ros
+from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel
 from rtree import index
 from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import PointCloud2
 from sogmm_cpu import SOGMMf4Host as CPUContainerf4
+from sogmm_cpu import SOGMMInference as CPUInference
+from sogmm_cpu import SOGMMLearner as CPUFit
 from sogmm_gpu import SOGMMf4Device as GPUContainerf4
 from sogmm_gpu import SOGMMInference as GPUInference
 from sogmm_gpu import SOGMMLearner as GPUFit
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
-from gmms_exploration.msg import GaussianMixtureModel, GaussianComponent
-from typing import List, Optional
 
 
 class MasterGMM:
@@ -568,6 +571,9 @@ class SOGMMROSNode:
 
     def _load_parameters(self):
         """Load all ROS parameters with default values."""
+        # Hardware selection
+        self.use_gpu = rospy.get_param("~use_gpu", True)
+        
         # SOGMM algorithm parameters
         self.bandwidth = rospy.get_param("~bandwidth", 0.02)
         self.tolerance = rospy.get_param("~tolerance", 1e-3)
@@ -614,6 +620,8 @@ class SOGMMROSNode:
 
         self.fusion_weight_update = rospy.get_param("~fusion_weight_update", False)
 
+        rospy.logdebug(f"OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS', 'Not set')}")
+
     def _setup_communication(self):
         """Initialize ROS publishers and subscribers."""
         # Publishers
@@ -657,19 +665,32 @@ class SOGMMROSNode:
             self.enable_freeze,
             self.fusion_weight_update,
         )
-        self.learner = GPUFit(
+        
+        # Select CPU or GPU implementation based on parameter
+        if self.use_gpu:
+            FitClass = GPUFit
+            InferenceClass = GPUInference
+            self.ContainerClass = GPUContainerf4
+            rospy.loginfo("Using GPU implementation for SOGMM")
+        else:
+            FitClass = CPUFit
+            InferenceClass = CPUInference
+            self.ContainerClass = CPUContainerf4
+            rospy.loginfo("Using CPU implementation for SOGMM")
+        
+        self.learner = FitClass(
             bandwidth=self.bandwidth,
             tolerance=self.tolerance,
             reg_covar=self.reg_covar,
             max_iter=self.max_iter,
         )
-        self.fallback_learner = GPUFit(
+        self.fallback_learner = FitClass(
             bandwidth=self.bandwidth,
             tolerance=self.tolerance,
             reg_covar=max(self.reg_covar * 100.0, 1e-3),
             max_iter=self.max_iter,
         )
-        self.inference = GPUInference()
+        self.inference = InferenceClass()
 
         # Processing state
         self.frame_count = 0
@@ -709,6 +730,7 @@ class SOGMMROSNode:
         rospy.loginfo(f"  - KL divergence match threshold: {self.kl_div_match_thresh}")
         rospy.loginfo(f"  - Target frame: {self.target_frame}")
         rospy.loginfo(f"  - Processing decimation: {self.processing_decimation}")
+        rospy.loginfo(f"  - Use GPU: {self.use_gpu}")
         rospy.loginfo(f"  - Visualization enabled: {self.enable_visualization}")
         rospy.loginfo(f"  - Visualization scale: {self.visualization_scale}")
         rospy.loginfo(f"  - Color by: {self.color_by}")
@@ -1028,12 +1050,12 @@ class SOGMMROSNode:
         # create a GMM submap using component indices
         submap = model.submap_from_indices(list(comp_indices))
 
-        # take it to the GPU
-        submap_gpu = GPUContainerf4(submap.n_components_)
-        submap_gpu.from_host(submap)
+        # transfer to GPU/CPU container based on configuration
+        submap_device = self.ContainerClass(submap.n_components_)
+        submap_device.from_host(submap)
 
-        # perform likelihood score computation on the GPU
-        scores = self.inference.score_3d(pcld[:, :3], submap_gpu)
+        # perform likelihood score computation
+        scores = self.inference.score_3d(pcld[:, :3], submap_device)
 
         # filter the point cloud and return novel points
         scores = scores.flatten()
