@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   message_generation
   nav_msgs
+  poly_traj_ros
 )
 
 ## System dependencies are found with CMake's conventions
@@ -62,7 +63,6 @@ add_message_files(
 ## Generate services in the 'srv' folder
 add_service_files(
   FILES
-  FlyTrajectory.srv
   GetViewpoint.srv
 )
 
@@ -78,6 +78,7 @@ generate_messages(
   DEPENDENCIES
   std_msgs
   geometry_msgs
+  poly_traj_ros
 )
 
 ################################################

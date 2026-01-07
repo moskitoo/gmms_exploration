@@ -9,7 +9,8 @@ from geometry_msgs.msg import PoseStamped, Point
 from visualization_msgs.msg import Marker
 
 from gmms_exploration.msg import Grid
-from gmms_exploration.srv import FlyTrajectory, GetViewpoint
+from gmms_exploration.srv import GetViewpoint
+from poly_traj_ros.srv import FlyTrajectory
 from scripts.topological_graph import TopoTree
 
 class SOGMMExplorationNode:

@@ -16,7 +16,8 @@ from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
 from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel, Grid
-from gmms_exploration.srv import FlyTrajectory, GetViewpoint
+from gmms_exploration.srv import GetViewpoint
+from poly_traj_ros.srv import FlyTrajectory
 from scripts.topological_graph import TopoTree
 
 class SOGMMSimpleExplorationNode:
