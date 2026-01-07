@@ -8,11 +8,11 @@
     <param name="omp_num_threads" value="$(arg omp_threads)" />
 
     <node name="sogmm_odom" pkg="gmms_exploration" type="sogmm_odometry_node.py"
-          launch-prefix="bash -c 'cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">
+          launch-prefix="bash -c 'ORIGINAL_PYTHONPATH=$PYTHONPATH &amp;&amp; cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; export PYTHONPATH=$PYTHONPATH:$ORIGINAL_PYTHONPATH &amp;&amp; exec &quot;$@&quot;' bash">
     </node>
     
     <node name="sogmm_node" pkg="gmms_exploration" type="sogmm_ros_node.py" output="screen"
-          launch-prefix="bash -c 'export OMP_NUM_THREADS=$(arg omp_threads) &amp;&amp; cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; exec &quot;$@&quot;' bash">    
+          launch-prefix="bash -c 'export OMP_NUM_THREADS=$(arg omp_threads) &amp;&amp; ORIGINAL_PYTHONPATH=$PYTHONPATH &amp;&amp; cd /home/niedzial/gira/gira3d-reconstruction &amp;&amp; source .venv/bin/activate &amp;&amp; source workon &amp;&amp; export PYTHONPATH=$PYTHONPATH:$ORIGINAL_PYTHONPATH &amp;&amp; exec &quot;$@&quot;' bash">    
     </node>
     
     <arg name="rviz" default="false" />
