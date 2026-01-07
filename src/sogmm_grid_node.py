@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
 
 import logging
-import threading
-from typing import Tuple
+from typing import List, Tuple
 
 import matplotlib.cm as cm
 import numpy as np
 import rospy
-import tf
-import tf2_ros
-from geometry_msgs.msg import PoseStamped, TransformStamped, Point
-from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Point
 from std_msgs.msg import Int32
 from visualization_msgs.msg import Marker, MarkerArray
 
-from gmms_exploration.msg import GaussianComponent, GaussianMixtureModel, Grid
-from gmms_exploration.srv import FlyTrajectory, GetViewpoint, GetViewpointResponse
-from rospy.impl.tcpros_service import Service
-from typing import List, Tuple
+from gmms_exploration.msg import GaussianMixtureModel, Grid
+from gmms_exploration.srv import GetViewpoint, GetViewpointResponse
 
 
 class ExplorationGrid:
@@ -95,9 +89,7 @@ class ExplorationGrid:
             self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True, nms_filter=False)
         else:
             self.cluster_centroids, self.average_gradient_magnitudes = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=True, nms_filter=False)
-        # self.cluster_centroids_not_filtered, self.average_gradient_magnitudes_not_filtered = self.get_gaussian_frontiers(means, uncertainties, cluster_size=self.grid_cell_size, filter_grad_mean=False)
 
-        # rospy.logdebug(f"centroid number         : {self.cluster_centroids_not_filtered.shape}\n")
         rospy.logdebug(f"centroids shape: {self.cluster_centroids.shape}")
 
 
@@ -131,8 +123,6 @@ class ExplorationGrid:
         sum_grads = np.zeros((num_unique, 1))
         counts = np.zeros(num_unique, dtype=int)
 
-        # rospy.logdebug(f"num_unique: {num_unique}")
-
         # compute means for each cluster
         np.add.at(sum_means, inverse_indices, means)
         
@@ -157,8 +147,7 @@ class ExplorationGrid:
             # Apply gradient filtering if needed
             if filter_grad_mean:
                 avg_grad = np.mean(mean_grads)
-                ths_grad = avg_grad
-                grads_mask = (mean_grads > ths_grad).flatten()
+                grads_mask = (mean_grads > avg_grad).flatten()
                 filtered_cluster_indices = unique_cluster_indices[grads_mask]
                 filtered_mean_grads = mean_grads[grads_mask]
             else:
@@ -191,8 +180,7 @@ class ExplorationGrid:
         # For dynamic mode, apply filtering after computing cluster centroids
         if filter_grad_mean and len(mean_grads) > 1:
             avg_grad = np.mean(mean_grads)
-            ths_grad = avg_grad
-            grads_mask = (mean_grads > ths_grad).flatten()
+            grads_mask = (mean_grads > avg_grad).flatten()
             mean_positions = mean_positions[grads_mask]
             mean_grads = mean_grads[grads_mask]
         
@@ -202,8 +190,6 @@ class ExplorationGrid:
 
         average_gradient_magnitudes = mean_grads.flatten()
 
-        # rospy.logdebug(f"cluster_centroids: {cluster_centroids}")
-        
         sorted_indices = np.argsort(average_gradient_magnitudes)
         cluster_centroids = cluster_centroids[sorted_indices]
         average_gradient_magnitudes = average_gradient_magnitudes[sorted_indices]
@@ -447,12 +433,7 @@ class SOGMMGridNode:
             "/starling1/mpa/grid", Grid, queue_size=1
         )
 
-        self.reached_target = True
-
     def gmm_callback(self, msg: GaussianMixtureModel):
-        # rospy.logdebug("Received GMM")
-
-        # Process pose directly in callback to avoid threading issues
         self.process_gmm(msg)
 
     def updated_gmm_callback(self, msg: GaussianMixtureModel):
