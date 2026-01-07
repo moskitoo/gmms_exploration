@@ -668,29 +668,37 @@ class SOGMMROSNode:
         
         # Select CPU or GPU implementation based on parameter
         if self.use_gpu:
-            FitClass = GPUFit
-            InferenceClass = GPUInference
+            self.learner = GPUFit(
+                bandwidth=self.bandwidth,
+                tolerance=self.tolerance,
+                reg_covar=self.reg_covar,
+                max_iter=self.max_iter,
+            )
+            self.fallback_learner = GPUFit(
+                bandwidth=self.bandwidth,
+                tolerance=self.tolerance,
+                reg_covar=max(self.reg_covar * 100.0, 1e-3),
+                max_iter=self.max_iter,
+            )
+            self.inference = GPUInference()
             self.ContainerClass = GPUContainerf4
             rospy.loginfo("Using GPU implementation for SOGMM")
         else:
-            FitClass = CPUFit
-            InferenceClass = CPUInference
+            self.learner = CPUFit(
+                bandwidth=self.bandwidth,
+                tolerance=self.tolerance,
+                reg_covar=self.reg_covar,
+                max_iter=self.max_iter,
+            )
+            self.fallback_learner = CPUFit(
+                bandwidth=self.bandwidth,
+                tolerance=self.tolerance,
+                reg_covar=max(self.reg_covar * 100.0, 1e-3),
+                max_iter=self.max_iter,
+            )
+            self.inference = CPUInference()
             self.ContainerClass = CPUContainerf4
             rospy.loginfo("Using CPU implementation for SOGMM")
-        
-        self.learner = FitClass(
-            bandwidth=self.bandwidth,
-            tolerance=self.tolerance,
-            reg_covar=self.reg_covar,
-            max_iter=self.max_iter,
-        )
-        self.fallback_learner = FitClass(
-            bandwidth=self.bandwidth,
-            tolerance=self.tolerance,
-            reg_covar=max(self.reg_covar * 100.0, 1e-3),
-            max_iter=self.max_iter,
-        )
-        self.inference = InferenceClass()
 
         # Processing state
         self.frame_count = 0
@@ -778,21 +786,26 @@ class SOGMMROSNode:
             gmm_start_time = time.time()
 
             # 1. Generate a local GMM from the current point cloud
-            local_model_gpu = GPUContainerf4()
+            local_model = self.ContainerClass()
             ms_data = self.extract_ms_data(pcld)
 
             try:
-                self.learner.fit(ms_data, pcld, local_model_gpu)
+                self.learner.fit(ms_data, pcld, local_model)
             except RuntimeError as e:
                 # Catch Open3D/CUDA Cholesky decomposition failure
                 if "potrfBatched failed" in str(e):
-                    rospy.logwarn("GPU GMM fitting failed (singular covariance). Retrying with higher regularization...")
+                    rospy.logwarn("GMM fitting failed (singular covariance). Retrying with higher regularization...")
                     # Create a temporary learner with higher regularization (e.g. 1e-3) to ensure stability
-                    self.fallback_learner.fit(ms_data, pcld, local_model_gpu)
+                    self.fallback_learner.fit(ms_data, pcld, local_model)
                 else:
                     raise e
-            local_model_cpu = CPUContainerf4(local_model_gpu.n_components_)
-            local_model_gpu.to_host(local_model_cpu)
+            
+            # Convert to CPU if using GPU (MasterGMM expects CPU containers)
+            if self.use_gpu:
+                local_model_cpu = CPUContainerf4(local_model.n_components_)
+                local_model.to_host(local_model_cpu)
+            else:
+                local_model_cpu = local_model
 
             gira_timestamp = time.time()
             gira_time = gira_timestamp - gmm_start_time
