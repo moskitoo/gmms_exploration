@@ -160,12 +160,7 @@ class TopoTree:
             ]
         ).as_matrix()
 
-        # Skip graph building in simple mode
-        if self.simple_mode:
-            rospy.logdebug("[lookup_odom] Simple mode - skipping graph building")
-            return 0
-
-        rospy.logdebug("[lookup_odom] Graph mode - proceeding with graph building")
+        rospy.logdebug("[lookup_odom] Building odometry graph for visualization")
         
         # Acquire lock to protect graph modifications
         with self.graph_lock:
