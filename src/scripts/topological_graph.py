@@ -68,6 +68,9 @@ class TopoTree:
         else:
             rospy.loginfo("TopoTree initialized in GRAPH MODE (RT-GuIDE)")
 
+        # Visualization parameters
+        self.enable_viewpoint_candidate_visualization = rospy.get_param("~enable_viewpoint_candidate_visualization", True)
+        
         # Get map bounds and grid offset to match grid generation
         self.bounds = rospy.get_param("map_bounds", [(-0.65, 9.0), (-1.0, 4.5), (0.0, 3.0)])
         self.grid_offset = rospy.get_param("~grid_offset", 0.5)
@@ -1174,6 +1177,10 @@ class TopoTree:
         # Add nodes as spheres
         for node, data in self.graph.nodes(data=True):
             try:
+                # Skip predicted nodes if visualization is disabled
+                if data["predicted"] and not self.enable_viewpoint_candidate_visualization:
+                    continue
+                    
                 marker = Marker()
                 marker.header.frame_id = self.world_frame_id
                 marker.header.stamp = rospy.Time.now()
@@ -1210,6 +1217,10 @@ class TopoTree:
 
         for node, data in self.frontier_graph.nodes(data=True):
             try:
+                # Skip predicted nodes if visualization is disabled
+                if data["predicted"] and not self.enable_viewpoint_candidate_visualization:
+                    continue
+                    
                 marker = Marker()
                 marker.header.frame_id = self.world_frame_id
                 marker.header.stamp = rospy.Time.now()
@@ -1247,6 +1258,12 @@ class TopoTree:
         # Add edges as lines
         for edge in self.graph.edges:
             try:
+                # Skip edges connected to predicted nodes if visualization is disabled
+                if not self.enable_viewpoint_candidate_visualization:
+                    if (self.graph.nodes[edge[0]]["predicted"] or 
+                        self.graph.nodes[edge[1]]["predicted"]):
+                        continue
+                
                 marker = Marker()
                 marker.header.frame_id = self.world_frame_id
                 marker.header.stamp = rospy.Time.now()

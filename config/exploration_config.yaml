@@ -61,5 +61,7 @@ sogmm_exploration_node:
   exploration_distance_gain: 0.2
   clamp_z: True
   distance_threshold: 1.0
+  enable_viewpoint_visualization: false
+  enable_viewpoint_candidate_visualization: false  # Show red viewpoint candidates and gray connection lines
 
 simple_exploration: False 
