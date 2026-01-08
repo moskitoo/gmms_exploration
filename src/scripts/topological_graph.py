@@ -1123,56 +1123,56 @@ class TopoTree:
             selected_marker.color.b = 0.0
             marker_array.markers.append(selected_marker)
             
-            # Find the nearest frontier node to visualize as region center
-            nearest_frontier = None
-            min_dist = float('inf')
-            for fnode, fdata in self.frontier_graph.nodes(data=True):
-                if fdata.get("frontier", False):
-                    dist = np.linalg.norm(np.array(goal_data["pos"]) - np.array(fdata["pos"]))
-                    if dist < min_dist:
-                        min_dist = dist
-                        nearest_frontier = fdata
+            # # Find the nearest frontier node to visualize as region center
+            # nearest_frontier = None
+            # min_dist = float('inf')
+            # for fnode, fdata in self.frontier_graph.nodes(data=True):
+            #     if fdata.get("frontier", False):
+            #         dist = np.linalg.norm(np.array(goal_data["pos"]) - np.array(fdata["pos"]))
+            #         if dist < min_dist:
+            #             min_dist = dist
+            #             nearest_frontier = fdata
             
-            if nearest_frontier is not None:
-                # Region center marker
-                region_marker = Marker()
-                region_marker.header.frame_id = self.world_frame_id
-                region_marker.header.stamp = rospy.Time.now()
-                region_marker.ns = "region_center"
-                region_marker.id = 0
-                region_marker.type = Marker.SPHERE
-                region_marker.action = Marker.ADD
-                region_marker.pose.position.x = nearest_frontier["pos"][0]
-                region_marker.pose.position.y = nearest_frontier["pos"][1]
-                region_marker.pose.position.z = nearest_frontier["pos"][2]
-                region_marker.pose.orientation.w = 1.0
-                region_marker.scale.x = 0.2
-                region_marker.scale.y = 0.2
-                region_marker.scale.z = 0.2
-                region_marker.color.a = 0.8
-                region_marker.color.r = 1.0
-                region_marker.color.g = 0.0
-                region_marker.color.b = 1.0
-                marker_array.markers.append(region_marker)
+            # if nearest_frontier is not None:
+            #     # Region center marker
+            #     region_marker = Marker()
+            #     region_marker.header.frame_id = self.world_frame_id
+            #     region_marker.header.stamp = rospy.Time.now()
+            #     region_marker.ns = "region_center"
+            #     region_marker.id = 0
+            #     region_marker.type = Marker.SPHERE
+            #     region_marker.action = Marker.ADD
+            #     region_marker.pose.position.x = nearest_frontier["pos"][0]
+            #     region_marker.pose.position.y = nearest_frontier["pos"][1]
+            #     region_marker.pose.position.z = nearest_frontier["pos"][2]
+            #     region_marker.pose.orientation.w = 1.0
+            #     region_marker.scale.x = 0.2
+            #     region_marker.scale.y = 0.2
+            #     region_marker.scale.z = 0.2
+            #     region_marker.color.a = 0.8
+            #     region_marker.color.r = 1.0
+            #     region_marker.color.g = 0.0
+            #     region_marker.color.b = 1.0
+            #     marker_array.markers.append(region_marker)
                 
-                # Connecting line from viewpoint to region center
-                line_marker = Marker()
-                line_marker.header.frame_id = self.world_frame_id
-                line_marker.header.stamp = rospy.Time.now()
-                line_marker.ns = "viewpoint_region_line"
-                line_marker.id = 0
-                line_marker.type = Marker.LINE_STRIP
-                line_marker.action = Marker.ADD
-                line_marker.scale.x = 0.05
-                line_marker.color.a = 0.6
-                line_marker.color.r = 1.0
-                line_marker.color.g = 0.0
-                line_marker.color.b = 1.0
-                line_marker.points = [
-                    self.create_point(goal_data["pos"]),
-                    self.create_point(nearest_frontier["pos"])
-                ]
-                marker_array.markers.append(line_marker)
+            #     # Connecting line from viewpoint to region center
+            #     line_marker = Marker()
+            #     line_marker.header.frame_id = self.world_frame_id
+            #     line_marker.header.stamp = rospy.Time.now()
+            #     line_marker.ns = "viewpoint_region_line"
+            #     line_marker.id = 0
+            #     line_marker.type = Marker.LINE_STRIP
+            #     line_marker.action = Marker.ADD
+            #     line_marker.scale.x = 0.05
+            #     line_marker.color.a = 0.6
+            #     line_marker.color.r = 1.0
+            #     line_marker.color.g = 0.0
+            #     line_marker.color.b = 1.0
+            #     line_marker.points = [
+            #         self.create_point(goal_data["pos"]),
+            #         self.create_point(nearest_frontier["pos"])
+            #     ]
+            #     marker_array.markers.append(line_marker)
 
         # Add nodes as spheres
         for node, data in self.graph.nodes(data=True):
