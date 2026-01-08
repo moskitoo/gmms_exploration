@@ -764,26 +764,26 @@ class TopoTree:
         marker_array.markers.append(bounds_marker)
         
         # Visualize all candidates
-        for idx, vp in enumerate(self.viewpoint_candidates):
-            marker = Marker()
-            marker.header.frame_id = self.world_frame_id
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = "simple_viewpoints"
-            marker.id = idx + 1
-            marker.type = Marker.SPHERE
-            marker.action = Marker.ADD
-            marker.pose.position.x = vp['pos'][0]
-            marker.pose.position.y = vp['pos'][1]
-            marker.pose.position.z = vp['pos'][2]
-            marker.pose.orientation.w = 1.0
-            marker.scale.x = 0.1
-            marker.scale.y = 0.1
-            marker.scale.z = 0.1
-            marker.color.a = 0.5
-            marker.color.r = 1.0
-            marker.color.g = 0.5
-            marker.color.b = 0.0
-            marker_array.markers.append(marker)
+        # for idx, vp in enumerate(self.viewpoint_candidates):
+        #     marker = Marker()
+        #     marker.header.frame_id = self.world_frame_id
+        #     marker.header.stamp = rospy.Time.now()
+        #     marker.ns = "simple_viewpoints"
+        #     marker.id = idx + 1
+        #     marker.type = Marker.SPHERE
+        #     marker.action = Marker.ADD
+        #     marker.pose.position.x = vp['pos'][0]
+        #     marker.pose.position.y = vp['pos'][1]
+        #     marker.pose.position.z = vp['pos'][2]
+        #     marker.pose.orientation.w = 1.0
+        #     marker.scale.x = 0.1
+        #     marker.scale.y = 0.1
+        #     marker.scale.z = 0.1
+        #     marker.color.a = 0.5
+        #     marker.color.r = 1.0
+        #     marker.color.g = 0.5
+        #     marker.color.b = 0.0
+        #     marker_array.markers.append(marker)
         
         # Highlight selected viewpoint
         if self.selected_viewpoint is not None:
