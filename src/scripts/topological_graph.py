@@ -807,53 +807,53 @@ class TopoTree:
             marker.color.b = 0.0
             marker_array.markers.append(marker)
             
-            # Visualize the region center for the selected viewpoint
-            if hasattr(self, 'ranked_viewpoints') and self.ranked_viewpoints and \
-               hasattr(self, 'current_viewpoint_rank') and self.current_viewpoint_rank < len(self.ranked_viewpoints):
-                selected_vp_data = self.ranked_viewpoints[self.current_viewpoint_rank]
-                if 'region_center' in selected_vp_data:
-                    region_center = selected_vp_data['region_center']
-                    
-                    # Region center marker
-                    region_marker = Marker()
-                    region_marker.header.frame_id = self.world_frame_id
-                    region_marker.header.stamp = rospy.Time.now()
-                    region_marker.ns = "simple_viewpoints"
-                    region_marker.id = 1000
-                    region_marker.type = Marker.SPHERE
-                    region_marker.action = Marker.ADD
-                    region_marker.pose.position.x = region_center[0]
-                    region_marker.pose.position.y = region_center[1]
-                    region_marker.pose.position.z = region_center[2]
-                    region_marker.pose.orientation.w = 1.0
-                    region_marker.scale.x = 0.2
-                    region_marker.scale.y = 0.2
-                    region_marker.scale.z = 0.2
-                    region_marker.color.a = 0.8
-                    region_marker.color.r = 1.0
-                    region_marker.color.g = 0.0
-                    region_marker.color.b = 1.0  # Magenta for region center
-                    marker_array.markers.append(region_marker)
-                    
-                    # Line connecting viewpoint to region center
-                    line_marker = Marker()
-                    line_marker.header.frame_id = self.world_frame_id
-                    line_marker.header.stamp = rospy.Time.now()
-                    line_marker.ns = "simple_viewpoints"
-                    line_marker.id = 1001
-                    line_marker.type = Marker.LINE_STRIP
-                    line_marker.action = Marker.ADD
-                    line_marker.scale.x = 0.05
-                    line_marker.color.a = 0.6
-                    line_marker.color.r = 1.0
-                    line_marker.color.g = 0.0
-                    line_marker.color.b = 1.0
-                    
-                    # Add points
-                    p1 = self.create_point(self.selected_viewpoint)
-                    p2 = self.create_point(region_center)
-                    line_marker.points = [p1, p2]
-                    marker_array.markers.append(line_marker)
+            # # Visualize the region center for the selected viewpoint
+            # if hasattr(self, 'ranked_viewpoints') and self.ranked_viewpoints and \
+            #    hasattr(self, 'current_viewpoint_rank') and self.current_viewpoint_rank < len(self.ranked_viewpoints):
+            #     selected_vp_data = self.ranked_viewpoints[self.current_viewpoint_rank]
+            #     if 'region_center' in selected_vp_data:
+            #         region_center = selected_vp_data['region_center']
+            #         
+            #         # Region center marker
+            #         region_marker = Marker()
+            #         region_marker.header.frame_id = self.world_frame_id
+            #         region_marker.header.stamp = rospy.Time.now()
+            #         region_marker.ns = "simple_viewpoints"
+            #         region_marker.id = 1000
+            #         region_marker.type = Marker.SPHERE
+            #         region_marker.action = Marker.ADD
+            #         region_marker.pose.position.x = region_center[0]
+            #         region_marker.pose.position.y = region_center[1]
+            #         region_marker.pose.position.z = region_center[2]
+            #         region_marker.pose.orientation.w = 1.0
+            #         region_marker.scale.x = 0.2
+            #         region_marker.scale.y = 0.2
+            #         region_marker.scale.z = 0.2
+            #         region_marker.color.a = 0.8
+            #         region_marker.color.r = 1.0
+            #         region_marker.color.g = 0.0
+            #         region_marker.color.b = 1.0  # Magenta for region center
+            #         marker_array.markers.append(region_marker)
+            #         
+            #         # Line connecting viewpoint to region center
+            #         line_marker = Marker()
+            #         line_marker.header.frame_id = self.world_frame_id
+            #         line_marker.header.stamp = rospy.Time.now()
+            #         line_marker.ns = "simple_viewpoints"
+            #         line_marker.id = 1001
+            #         line_marker.type = Marker.LINE_STRIP
+            #         line_marker.action = Marker.ADD
+            #         line_marker.scale.x = 0.05
+            #         line_marker.color.a = 0.6
+            #         line_marker.color.r = 1.0
+            #         line_marker.color.g = 0.0
+            #         line_marker.color.b = 1.0
+            #         
+            #         # Add points
+            #         p1 = self.create_point(self.selected_viewpoint)
+            #         p2 = self.create_point(region_center)
+            #         line_marker.points = [p1, p2]
+            #         marker_array.markers.append(line_marker)
         
         self.marker_pub.publish(marker_array)
 
