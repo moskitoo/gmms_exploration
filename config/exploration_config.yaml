@@ -18,14 +18,15 @@ sogmm_node:
   # Visualization Parameters
   enable_visualization: true
   visualization_scale: 2.0
-  color_by: "confidence" # Options: intensity, confidence, stability, combined
+  color_by: "stability" # Options: intensity, confidence, stability, combined
   add_metric_text: false
   suspicious_displacement: 0.001
   unstable_displacement: 0.4
   displacement_score_factor: 0.15
 
-  uncertainty_heuristic: "confidence" # Options: intensity, confidence, stability, combined
-  uncertainty_scaler: 10.0
+  uncertainty_heuristic: "stability" # Options: intensity, confidence, stability, combined
+  uncertainty_scaler: 0.05 #stability scaler -> smaller - slower convergence
+  # uncertainty_scaler: 10. #confidence scaler
 
   # Processing Parameters
   processing_decimation: 1

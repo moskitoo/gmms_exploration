@@ -504,13 +504,48 @@ class MasterGMM:
         return n_pruned
 
     def _calculate_uncertainty(self, master_indices):
-        """Calculate uncertainty values for specified components based on heuristic mode."""
+        """Calculate uncertainty values for specified components based on heuristic mode.
+        
+        Uncertainty calculation modes:
+        - confidence: Based on fusion count (higher fusion = lower uncertainty)
+                     Formula: exp(-fusion_count / scaler)
+        - stability: Based on displacement (higher displacement = higher uncertainty)
+                    Formula: 1 - exp(-displacement / scaler)
+        - combined: Combines both fusion count and displacement
+        
+        Returns values in range [0, 1] where 0 = certain, 1 = uncertain
+        """
         if self.uncertainty_heuristic == "confidence":
             return np.exp(
                 -self.model.fusion_counts_[master_indices] / self.uncertainty_scaler
             )
-        # Note: stability and combined modes are not fully implemented
-        # They would require additional logic here
+        
+        elif self.uncertainty_heuristic == "stability":
+            displacements = self.model.last_displacements_[master_indices]
+            # Lower displacement = lower uncertainty (more stable = more certain)
+            # Small displacement → low uncertainty (≈0), large displacement → high uncertainty (≈1)
+            # Formula: 1 - exp(-displacement/scale)
+            # This gives: displacement=0 → uncertainty≈0, large displacement → uncertainty→1
+            return 1.0 - np.exp(-displacements / self.uncertainty_scaler)
+        
+        elif self.uncertainty_heuristic == "combined":
+            # Combine fusion count and displacement information
+            fusion_counts = self.model.fusion_counts_[master_indices]
+            displacements = self.model.last_displacements_[master_indices]
+            
+            # Confidence component (lower is better)
+            confidence_uncertainty = np.exp(
+                -fusion_counts / self.uncertainty_scaler
+            )
+            
+            # Stability component (lower is better)
+            stability_uncertainty = 1.0 - np.exp(-displacements / self.uncertainty_scaler)
+            
+            # Average the two uncertainty measures
+            return (confidence_uncertainty + stability_uncertainty) / 2.0
+        
+        # Fallback for unknown modes
+        rospy.logwarn(f"Unknown uncertainty heuristic: {self.uncertainty_heuristic}, using zeros")
         return np.zeros(len(master_indices))
 
 
@@ -1287,7 +1322,8 @@ class SOGMMROSNode:
             marker.color.a = 0.8
 
         elif self.color_by in ["stability", "combined"]:
-            color = cm.RdYlGn(master_gmm.model.uncertainty_[i])
+            # Use same inversion as confidence: low uncertainty (high stored value) → yellow, high uncertainty (low stored value) → blue
+            color = cm.plasma(-master_gmm.model.uncertainty_[i] + 1.0)
             marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
             marker.color.a = 0.8
 
@@ -1359,7 +1395,7 @@ class SOGMMROSNode:
         if self.color_by == "confidence":
             return f"C:{master_gmm.model.uncertainty_[i]:.3f}{suffix}"
         elif self.color_by == "stability":
-            return f"D:{master_gmm.model.last_displacements_[i]:.3f}{suffix}"
+            return f"D:{master_gmm.model.last_displacements_[i]:.3f}{suffix}\nC:{master_gmm.model.uncertainty_[i]:.3f}{suffix}"
         elif self.color_by == "combined":
             count = master_gmm.model.fusion_counts_[i]
             disp = master_gmm.model.last_displacements_[i]
