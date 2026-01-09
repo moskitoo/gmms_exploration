@@ -1,7 +1,7 @@
 # General Settings
-omp_num_threads: 8
+omp_num_threads: 8 # Number of threads for parallel processing in GMM fitting - change in performance not observed!
 
-simple_exploration: true 
+simple_exploration: true # Enable simple exploration mode
 
 sogmm_node:
   # Logging
@@ -23,7 +23,8 @@ sogmm_node:
   enable_visualization: true
   visualization_scale: 2.0
   color_by: "confidence" # Options: intensity, confidence, stability, combined
-  add_metric_text: false
+  add_metric_text: false # Adds text markers showing metric values e.g. fusion count, uncertainty
+  #combined metric params - need further development
   suspicious_displacement: 0.001
   unstable_displacement: 0.4
   displacement_score_factor: 0.15
@@ -59,12 +60,12 @@ map_bounds: [[-0.65, 9.0], [-1.0, 4.5], [-0.7, 1.5]]  # custom arena (cluttered)
 sogmm_grid_node:
   grid_cell_size: 2.0
   grid_marker_scale: 0.5
-  grid_offset: 1.0
-  unexplored_uncertainty: 1.0
+  grid_offset: 1.0 # Offset between map bounds and grid origins in all directions
+  unexplored_uncertainty: 1.0 # Initial uncertainty value for cells
 
 sogmm_exploration_node:
-  exploration_distance_gain: 0.2
-  clamp_z: True
-  distance_threshold: 1.0
+  exploration_distance_gain: 0.2 # gain for distance penalty in viewpoint selection
+  clamp_z: True # Clamp z values to the map bounds when sampling viewpoints
+  distance_threshold: 1.0 # Distance between odometry nodes
   enable_viewpoint_visualization: false
   enable_viewpoint_candidate_visualization: false  # Show red viewpoint candidates and gray connection lines
