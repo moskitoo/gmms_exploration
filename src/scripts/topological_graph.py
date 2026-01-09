@@ -6,7 +6,7 @@ topological graph
 """
 
 import rospy
-from geometry_msgs import Point
+from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 import networkx as nx
 import math
