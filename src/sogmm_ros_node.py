@@ -140,6 +140,7 @@ class SOGMMROSNode:
 
         # Output file for saving GMM on shutdown
         self.output_file = rospy.get_param("~output_file", "gmm_output.txt")
+        self.save_gmm_on_shutdown = rospy.get_param("~save_gmm_on_shutdown", True)
 
         rospy.logdebug(f"OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS', 'Not set')}")
 
@@ -963,7 +964,8 @@ class SOGMMROSNode:
         Called when node is shutting down. Saves GMM and logs timing statistics.
         """
         # Save GMM to file
-        self.save_gmm_to_file(self.output_file)
+        if self.save_gmm_on_shutdown:
+            self.save_gmm_to_file(self.output_file)
         
         rospy.loginfo("="*80)
         rospy.loginfo("SOGMM Node Shutdown - Timing Statistics Summary")

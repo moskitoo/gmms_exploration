@@ -11,6 +11,7 @@ sogmm_node:
   use_gpu: true  # Options: true (GPU), false (CPU)
 
   output_file: "/home/niedzial/catkin_ws/src/gmms_exploration/saved_gmm/gmm_confidence_simple_dense_arena_recording.txt"
+  save_gmm_on_shutdown: false
   
   # SOGMM Algorithm Parameters
   bandwidth: 0.02
