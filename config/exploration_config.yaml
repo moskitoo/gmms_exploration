@@ -1,12 +1,16 @@
 # General Settings
 omp_num_threads: 8
 
+simple_exploration: true 
+
 sogmm_node:
   # Logging
   log_level: "DEBUG"  # Options: DEBUG, INFO, WARN, ERROR, FATAL
   
   # Hardware Selection
   use_gpu: true  # Options: true (GPU), false (CPU)
+
+  output_file: "/home/niedzial/catkin_ws/src/gmms_exploration/saved_gmm/gmm_confidence_simple_dense_arena_recording.txt"
   
   # SOGMM Algorithm Parameters
   bandwidth: 0.02
@@ -18,15 +22,15 @@ sogmm_node:
   # Visualization Parameters
   enable_visualization: true
   visualization_scale: 2.0
-  color_by: "stability" # Options: intensity, confidence, stability, combined
+  color_by: "confidence" # Options: intensity, confidence, stability, combined
   add_metric_text: false
   suspicious_displacement: 0.001
   unstable_displacement: 0.4
   displacement_score_factor: 0.15
 
-  uncertainty_heuristic: "stability" # Options: intensity, confidence, stability, combined
-  uncertainty_scaler: 0.05 #stability scaler -> smaller - slower convergence
-  # uncertainty_scaler: 10. #confidence scaler
+  uncertainty_heuristic: "confidence" # Options: intensity, confidence, stability, combined
+  # uncertainty_scaler: 0.05 #stability scaler -> smaller - slower convergence
+  uncertainty_scaler: 10. #confidence scaler
 
   # Processing Parameters
   processing_decimation: 1
@@ -48,9 +52,9 @@ sogmm_node:
   publish_whole_gmm: true
 
 # (x,y) bounds
-map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 2.0]] # hidden obstacle
+# map_bounds: [[-0.8, 8.7], [-2.75, 2.9], [0.0, 2.0]] # hidden obstacle
 # map_bounds: [[-3.5, 11.25], [-6., 5.8], [0.0, 3.0]] # big empty arena
-# map_bounds: [[-0.65, 9.0], [-1.0, 4.5], [-0.7, 1.5]]  # custom arena (cluttered)
+map_bounds: [[-0.65, 9.0], [-1.0, 4.5], [-0.7, 1.5]]  # custom arena (cluttered)
 
 sogmm_grid_node:
   grid_cell_size: 2.0
@@ -64,5 +68,3 @@ sogmm_exploration_node:
   distance_threshold: 1.0
   enable_viewpoint_visualization: false
   enable_viewpoint_candidate_visualization: false  # Show red viewpoint candidates and gray connection lines
-
-simple_exploration: False 
