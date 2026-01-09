@@ -6,7 +6,6 @@ This node subscribes to PointCloud2 messages, processes them using SOGMM,
 and publishes visualization markers for RViz.
 """
 
-import logging
 import os
 import threading
 import time
@@ -346,8 +345,9 @@ class SOGMMROSNode:
                     max_fusion_ratio=self.max_fusion_ratio,
                 )
                 # Filter out indices that were pruned
-                current_n_components = self.master_gmm.model.n_components_
-                updated_indices = [idx for idx in updated_indices if idx < current_n_components]
+                if self.master_gmm.model is not None:
+                    current_n_components = self.master_gmm.model.n_components_
+                    updated_indices = [idx for idx in updated_indices if idx < current_n_components]
 
             if (
                 self.frame_count % self.freeze_interval_frames == 0
@@ -356,6 +356,11 @@ class SOGMMROSNode:
                 self.master_gmm.freeze_components(
                     freeze_fusion_threshold=self.freeze_fusion_threshold
                 )
+            
+            # Filter out indices that were pruned
+            if self.master_gmm.model is not None:
+                current_n_components = self.master_gmm.model.n_components_
+                updated_indices = [idx for idx in updated_indices if idx < current_n_components]
 
             proc_timestamp = time.time()
             processing_time = proc_timestamp - gira_timestamp
@@ -367,7 +372,7 @@ class SOGMMROSNode:
             # Visualize results - only if we have a model
 
             viz_start_time = time.time()
-            if self.enable_visualization and self.master_gmm.model.n_components_ > 0:
+            if self.enable_visualization and self.master_gmm.model is not None and self.master_gmm.model.n_components_ > 0:
                 self.visualize_gmm(self.master_gmm, self.target_frame, msg.header.stamp, updated_indices)
             viz_time = time.time() - viz_start_time
 
@@ -379,7 +384,7 @@ class SOGMMROSNode:
             self.viz_times.append(viz_time)
             self.full_processing_times.append(full_processing_time)
             
-            n_components = self.master_gmm.model.n_components_
+            n_components = self.master_gmm.model.n_components_ if self.master_gmm.model is not None else 0
             rospy.loginfo(
                 f"Processed point cloud with {n_components} components in {full_processing_time:.3f}s (GIRA: {gira_time:.3f}s, Processing: {processing_time:.3f}s, Viz: {viz_time:.3f}s)"
             )
@@ -420,7 +425,10 @@ class SOGMMROSNode:
                 return
                 
             # Filter out invalid indices that may have been pruned
-            current_n_components = self.master_gmm.model.n_components_
+            if self.master_gmm.model is not None:
+                current_n_components = self.master_gmm.model.n_components_
+            else:
+                return
             valid_updated_indices = [idx for idx in updated_indices if idx < current_n_components]
             
             if len(valid_updated_indices) < len(updated_indices):
@@ -604,6 +612,7 @@ class SOGMMROSNode:
             return
 
         marker_array = MarkerArray()
+        marker_array.markers = []
 
         # Create markers for each Gaussian component
         for i in range(len(master_gmm.model.means_)):
@@ -708,6 +717,9 @@ class SOGMMROSNode:
         Returns:
             Marker object, or None if creation failed
         """
+        if master_gmm.model is None:
+            return None
+            
         marker = Marker()
         marker.header.frame_id = frame_id
         marker.header.stamp = timestamp
@@ -718,13 +730,13 @@ class SOGMMROSNode:
         marker.lifetime = rospy.Duration(self.MARKER_LIFETIME_SECS)
 
         # Set position
-        mean = master_gmm.model.means_[i, :3]
+        mean: np.ndarray = master_gmm.model.means_[i, :3]
         marker.pose.position.x = float(mean[0])
         marker.pose.position.y = float(mean[1])
         marker.pose.position.z = float(mean[2])
 
         # Set scale and orientation based on covariance
-        if not self._set_marker_geometry(marker, master_gmm.model.covariances_[i]):
+        if not self._set_marker_geometry(marker, covariance_flat=master_gmm.model.covariances_[i]):
             return None
 
         # Set color based on visualization mode
@@ -804,13 +816,13 @@ class SOGMMROSNode:
 
         # Color based on selected visualization mode
         if self.color_by == "confidence":
-            color = cm.plasma(-master_gmm.model.uncertainty_[i] + 1.0)
+            color = cm.get_cmap("plasma")(-master_gmm.model.uncertainty_[i] + 1.0)
             marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
             marker.color.a = 0.8
 
         elif self.color_by in ["stability", "combined"]:
             # Use same inversion as confidence: low uncertainty (high stored value) → yellow, high uncertainty (low stored value) → blue
-            color = cm.plasma(-master_gmm.model.uncertainty_[i] + 1.0)
+            color = cm.get_cmap("plasma")(-master_gmm.model.uncertainty_[i] + 1.0)
             marker.color.r, marker.color.g, marker.color.b = color[0], color[1], color[2]
             marker.color.a = 0.8
 
@@ -963,28 +975,28 @@ class SOGMMROSNode:
             
             gira_mean = np.mean(self.gira_times)
             gira_std = np.std(self.gira_times)
-            rospy.loginfo(f"GIRA (GMM Generation) Time:")
+            rospy.loginfo("GIRA (GMM Generation) Time:")
             rospy.loginfo(f"  Mean: {gira_mean:.4f}s")
             rospy.loginfo(f"  Std:  {gira_std:.4f}s")
             rospy.loginfo("")
             
             proc_mean = np.mean(self.processing_times)
             proc_std = np.std(self.processing_times)
-            rospy.loginfo(f"Processing Time:")
+            rospy.loginfo("Processing Time:")
             rospy.loginfo(f"  Mean: {proc_mean:.4f}s")
             rospy.loginfo(f"  Std:  {proc_std:.4f}s")
             rospy.loginfo("")
             
             viz_mean = np.mean(self.viz_times)
             viz_std = np.std(self.viz_times)
-            rospy.loginfo(f"Visualization Time:")
+            rospy.loginfo("Visualization Time:")
             rospy.loginfo(f"  Mean: {viz_mean:.4f}s")
             rospy.loginfo(f"  Std:  {viz_std:.4f}s")
             rospy.loginfo("")
             
             full_mean = np.mean(self.full_processing_times)
             full_std = np.std(self.full_processing_times)
-            rospy.loginfo(f"Total Processing Time:")
+            rospy.loginfo("Total Processing Time:")
             rospy.loginfo(f"  Mean: {full_mean:.4f}s")
             rospy.loginfo(f"  Std:  {full_std:.4f}s")
         else:
