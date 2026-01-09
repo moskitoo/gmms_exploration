@@ -48,7 +48,7 @@ Some submodules of sogmm-py have been modified for this project.
 
 1. Ensure you have a working gira3d-reconstruction package.
 
-2. Replace the submodules sogmm_open3d and self_organizing_gmm with the modified versions.
+2. Replace the submodules sogmm_open3d and self_organizing_gmm with the modified versions (can be found in 'wet' subdirectory).
 
 3. Rebuild your workspace.
 
