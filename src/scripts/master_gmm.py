@@ -59,7 +59,7 @@ class MasterGMM:
         n_incoming = len(gmm_measurement.weights_)
         rospy.loginfo(f"Processing {n_incoming} incoming Gaussians")
 
-        # Handle empty master GMM - initialize with first measurement
+        # Handle empty master GMM - initialize with first measurement"
         if self.model is None:
             self._initialize_from_measurement(gmm_measurement)
             return list(range(self.model.n_components_))
@@ -120,7 +120,7 @@ class MasterGMM:
 
     def _update_observation_counts(self, candidate_indices):
         """Update observation counts for components in re-observed region."""
-        if candidate_indices:
+        if candidate_indices and self.model is not None:
             self.model.observation_counts_[candidate_indices] += 1
 
     def _match_and_fuse_components(
@@ -134,6 +134,9 @@ class MasterGMM:
         """
         if not candidate_indices:
             return 0, [], list(range(gmm_measurement.n_components_))
+
+        # Ensure model is initialized (should always be true when this method is called)
+        assert self.model is not None, "Model must be initialized before fusion"
 
         # 1. Create a subset of the master model for matching (now includes frozen components)
         model_subset = self.model.submap_from_indices(candidate_indices)
@@ -276,6 +279,8 @@ class MasterGMM:
         """
         Vectorized fusion of multiple measurement components into master components.
         """
+        assert self.model is not None, "Model must be initialized before fusion"
+        
         # --- Gather data for all components to be fused ---
         # Master components
         w_i = self.model.weights_[master_indices]
@@ -357,6 +362,7 @@ class MasterGMM:
     def _add_new_components(self, gmm_measurement, new_components_ids):
         """Add unmatched components as new master components."""
 
+        assert self.model is not None, "Model must be initialized before adding new components"
         old_n_components = self.model.n_components_
 
         new_gmm = gmm_measurement.submap_from_indices(new_components_ids)
@@ -400,6 +406,9 @@ class MasterGMM:
         Args:
             freeze_fusion_threshold: Fusion count above which to freeze components
         """
+        if self.model is None:
+            return
+        
         freeze_indices = self.model.fusion_counts_ > freeze_fusion_threshold
         self.model.freeze_[freeze_indices] = 1.0
 
@@ -419,7 +428,7 @@ class MasterGMM:
         Returns:
             Number of components pruned
         """
-        if self.model.n_components_ == 0:
+        if self.model is None or self.model.n_components_ == 0:
             return 0
 
         # --- Vectorized Pruning Logic ---
@@ -492,6 +501,8 @@ class MasterGMM:
         
         Returns values in range [0, 1] where 0 = certain, 1 = uncertain
         """
+        assert self.model is not None, "Model must be initialized before calculating uncertainty"
+        
         if self.uncertainty_heuristic == "confidence":
             return np.exp(
                 -self.model.fusion_counts_[master_indices] / self.uncertainty_scaler

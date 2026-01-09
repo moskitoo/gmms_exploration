@@ -246,6 +246,8 @@ class ExplorationGrid:
             timestamp = rospy.Time.now()
 
         marker_array = MarkerArray()
+        if marker_array.markers is None:
+            marker_array.markers = []
 
         # Add a marker to delete all previous markers in this namespace
         delete_marker = Marker()
@@ -289,7 +291,8 @@ class ExplorationGrid:
                 marker.scale.z = self.grid_cell_size * marker_scale
 
                 # Color: Map uncertainty to color
-                color = cm.plasma(1-uncertainty)
+                cmap = cm.get_cmap('plasma')
+                color = cmap(1-uncertainty)
                 marker.color.r = color[0]
                 marker.color.g = color[1]
                 marker.color.b = color[2]
@@ -307,6 +310,7 @@ class ExplorationGrid:
             timestamp = rospy.Time.now()
 
         marker_array = MarkerArray()
+        marker_array.markers = []
 
         # Add a marker to delete all previous markers in this namespace
         delete_marker = Marker()
@@ -526,7 +530,7 @@ class SOGMMGridNode:
             
             proc_mean = np.mean(self.processing_times)
             proc_std = np.std(self.processing_times)
-            rospy.loginfo(f"Full Processing Time (GMM → Grid):")
+            rospy.loginfo("Full Processing Time (GMM → Grid):")
             rospy.loginfo(f"  Mean: {proc_mean:.4f}s")
             rospy.loginfo(f"  Std:  {proc_std:.4f}s")
         else:

@@ -6,7 +6,7 @@ topological graph
 """
 
 import rospy
-import geometry_msgs
+from geometry_msgs import Point
 from visualization_msgs.msg import Marker, MarkerArray
 import networkx as nx
 import math
@@ -190,7 +190,7 @@ class TopoTree:
                     distances = [
                         (n, np.linalg.norm(pos_np - np.array(d["pos"])))
                         for (n, d) in self.graph.nodes(data=True)
-                        if d["predicted"] == False
+                        if not d["predicted"]
                     ]
                     _min = min(distances, key=lambda x: x[1])
                     rospy.logdebug(f"[lookup_odom] Nearest node: {_min[0]} at distance {_min[1]:.3f}m (threshold: {self.odom_threshold}m)")
@@ -211,7 +211,7 @@ class TopoTree:
                         self.graph.add_edge(_min[0], self.node_id)
                         self.odom_id = current_node_id
                     else:
-                        rospy.logdebug(f"[lookup_odom] Skipping node addition - too close to existing node")
+                        rospy.logdebug("[lookup_odom] Skipping node addition - too close to existing node")
                     
                     # Always update previous_position when distance threshold is met,
                     # even if node wasn't added (to avoid comparing against stale position)
@@ -386,7 +386,7 @@ class TopoTree:
             if self.goal_node is not None:
                 try:
                     self.graph.nodes[self.goal_node]["utility"] = 0.0
-                except:
+                except KeyError:
                     pass
             self.prev_odom_pos = self.odom_pos
             self.prev_odom_yaw = self.odom_yaw
@@ -404,14 +404,14 @@ class TopoTree:
             dists = [
                 (node, np.linalg.norm((odom) - np.array(data["pos"])))
                 for node, data in self.graph.nodes(data=True)
-                if data["frontier"] == False and data["predicted"] == False
+                if not data["frontier"] and not data["predicted"]
             ]
 
             start = min(dists, key=lambda x: x[1])
             odom_dists = [
                 (node, np.linalg.norm((odom) - np.array(data["pos"])))
                 for node, data in self.graph.nodes(data=True)
-                if data["frontier"] == False and data["predicted"] == True
+                if not data["frontier"] and data["predicted"]
             ]
 
             for n, d in odom_dists:
@@ -523,28 +523,41 @@ class TopoTree:
         dist = self.shortest_visible_distance(region_center, self.fov)
         angle = np.linspace(0, 2 * np.pi, self.num_samples)
         
-        viewpoints = [] if return_dict else None
-        sampled_points = None if return_dict else np.zeros((self.num_samples, 3))
-        dists = None if return_dict else []
-        
-        for i in range(self.num_samples):
-            vp_x = region_center[0] + np.cos(angle[i]) * dist
-            vp_y = region_center[1] + np.sin(angle[i]) * dist
-            vp_z = np.clip(region_center[2], self.bounds[2][0]+0.1, self.bounds[2][1]-0.1)
-            
-            vp_pos = np.array([vp_x, vp_y, vp_z])
-            
-            # Check bounds - viewpoints must stay within original bounds
-            if not self.is_within_bounds(vp_pos, use_extended=False):
-                continue
-            
-            if return_dict:
+        if return_dict:
+            viewpoints = []
+            for i in range(self.num_samples):
+                vp_x = region_center[0] + np.cos(angle[i]) * dist
+                vp_y = region_center[1] + np.sin(angle[i]) * dist
+                vp_z = np.clip(region_center[2], self.bounds[2][0]+0.1, self.bounds[2][1]-0.1)
+                
+                vp_pos = np.array([vp_x, vp_y, vp_z])
+                
+                # Check bounds - viewpoints must stay within original bounds
+                if not self.is_within_bounds(vp_pos, use_extended=False):
+                    continue
+                
                 viewpoints.append({
                     'pos': vp_pos,
                     'utility': utility,
                     'region_center': region_center
                 })
-            else:
+            
+            return viewpoints
+        else:
+            sampled_points = np.zeros((self.num_samples, 3))
+            dists = []
+            
+            for i in range(self.num_samples):
+                vp_x = region_center[0] + np.cos(angle[i]) * dist
+                vp_y = region_center[1] + np.sin(angle[i]) * dist
+                vp_z = np.clip(region_center[2], self.bounds[2][0]+0.1, self.bounds[2][1]-0.1)
+                
+                vp_pos = np.array([vp_x, vp_y, vp_z])
+                
+                # Check bounds - viewpoints must stay within original bounds
+                if not self.is_within_bounds(vp_pos, use_extended=False):
+                    continue
+                
                 sampled_points[i] = vp_pos
                 # Calculate distances for graph mode
                 _dists = [
@@ -555,8 +568,8 @@ class TopoTree:
                 if _dists:
                     min_node, min_dist = min(_dists, key=lambda x: x[1])
                     dists.append((min_node, min_dist, i, np.linalg.norm(vp_pos[:2] - region_center[:2])))
-        
-        return viewpoints if return_dict else (sampled_points, dists)
+            
+            return (sampled_points, dists)
 
     def select_best_viewpoint_simple(self, exclude_positions=None):
         """
@@ -715,6 +728,7 @@ class TopoTree:
             return
         
         marker_array = MarkerArray()
+        marker_array.markers = []
         
         # Delete old markers
         marker = Marker()
@@ -971,7 +985,7 @@ class TopoTree:
                     ),
                 )
                 for (node, data) in self.graph.nodes(data=True)
-                if data["predicted"] == False
+                if not data["predicted"]
             ]
             _id = min(_dists, key=lambda x: x[1])[0]
             self.graph.add_edge(_id, _tmp_dists[0][0])
@@ -1009,8 +1023,8 @@ class TopoTree:
                     ),
                 )
                 for node, data in self.graph.nodes(data=True)
-                if self.safeget(data, "predicted", node) == False
-                and self.safeget(data, "frontier", node) == False
+                if not self.safeget(data, "predicted", node)
+                and not self.safeget(data, "frontier", node)
             ]
             # _dists = [(x,y) if (y > 1.0 and y < 2.0) else (x, np.inf)for x,y in _dists]
             min_id = min(enumerate(_dists), key=lambda x: x[1][1])[0]
@@ -1051,6 +1065,7 @@ class TopoTree:
         if self.world_frame_id is None:
             return
         marker_array_msg = MarkerArray()
+        marker_array_msg.markers = []
         marker = Marker()
         marker.ns = "graph_nodes"
         marker.header.frame_id = self.world_frame_id
@@ -1208,7 +1223,7 @@ class TopoTree:
                     marker.color.g = 1.0
                     marker.color.b = 0.0
                 marker_array.markers.append(marker)
-            except:
+            except (KeyError, AttributeError):
                 pass
 
         for node, data in self.frontier_graph.nodes(data=True):
@@ -1248,7 +1263,7 @@ class TopoTree:
                     marker.color.g = 1.0
                     marker.color.b = 0.0
                 marker_array.markers.append(marker)
-            except:
+            except (KeyError, AttributeError):
                 pass
 
         # Add edges as lines
@@ -1288,7 +1303,7 @@ class TopoTree:
 
                 marker.points = [self.create_point(p1), self.create_point(p2)]
                 marker_array.markers.append(marker)
-            except:
+            except KeyError:
                 pass
 
         self.marker_pub.publish(marker_array)
@@ -1301,6 +1316,7 @@ class TopoTree:
             return
 
         marker_array = MarkerArray()
+        marker_array.markers = []
 
         # Delete old cost markers
         marker = Marker()
@@ -1359,7 +1375,7 @@ class TopoTree:
         self.marker_pub.publish(marker_array)
 
     def create_point(self, pos):
-        point = geometry_msgs.msg.Point()
+        point = Point()
         point.x = pos[0]
         point.y = pos[1]
         point.z = pos[2]

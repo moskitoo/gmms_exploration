@@ -288,6 +288,8 @@ class SOGMMExplorationNode:
         marker.color.b = 0.
         marker.color.a = 1.0
 
+        marker.points = []
+
         # Set points
         for point in path:
             p = Point()
@@ -312,7 +314,7 @@ class SOGMMExplorationNode:
             
             path_mean = np.mean(self.topotree_path_times)
             path_std = np.std(self.topotree_path_times)
-            rospy.loginfo(f"TopoTree Path Planning Time:")
+            rospy.loginfo("TopoTree Path Planning Time:")
             rospy.loginfo(f"  Mean: {path_mean:.4f}s")
             rospy.loginfo(f"  Std:  {path_std:.4f}s")
         else:
