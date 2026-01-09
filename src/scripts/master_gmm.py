@@ -62,6 +62,9 @@ class MasterGMM:
         # Handle empty master GMM - initialize with first measurement"
         if self.model is None:
             self._initialize_from_measurement(gmm_measurement)
+            if self.model is None:
+                rospy.logerr("Failed to initialize master GMM")
+                return []
             return list(range(self.model.n_components_))
 
         candidate_indices = self.find_spatial_candidates(gmm_measurement)
@@ -96,6 +99,10 @@ class MasterGMM:
         """Initialize master GMM from first measurement."""
 
         self.model = CPUContainerf4(gmm_measurement)
+        
+        if self.model is None:
+            rospy.logerr("Failed to initialize model from measurement")
+            return
 
         # Build spatial index
         for i in range(self.model.n_components_):
