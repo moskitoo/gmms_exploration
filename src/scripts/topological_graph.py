@@ -6,17 +6,13 @@ topological graph
 """
 
 import rospy
-from nav_msgs.msg import Odometry
 import geometry_msgs
-from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 import networkx as nx
-import tf
 import math
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import heapq
-import copy
 import tf2_ros
 import threading
 

@@ -12,9 +12,7 @@ import ros_numpy
 import numpy as np
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Header
-import threading
 import time
-from scipy.spatial.transform import Rotation as R
 import sys
 import os
 
