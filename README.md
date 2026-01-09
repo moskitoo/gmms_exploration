@@ -1,15 +1,14 @@
-# GMMS Exploration - ROS Node for SOGMM Point Cloud Processing
-
-This package provides a ROS node that subscribes to PointCloud2 messages, processes them using Self-Organizing Gaussian Mixture Models (SOGMM), and visualizes the results in RViz as ellipsoids.
+# GMMS Exploration - ROS package for safe exploration in GMM representations using point cloud data 
 
 ## Features
 
-- **Real-time Processing**: Subscribes to PointCloud2 topics and processes point clouds in real-time
-- **3D Point Cloud Support**: Works with 3D point clouds (no intensity required)
-- **4D Support**: Can optionally use intensity values if available
-- **Adaptive Components**: Automatically determines the number of Gaussian components
-- **RViz Visualization**: Publishes MarkerArray messages for visualization as ellipsoids
-- **Configurable Parameters**: Adjustable bandwidth, component limits, and visualization settings
+- **Incremental Global Mapping**: Builds a persistent global Gaussian Mixture Model (GMM) by fusing local point cloud measurements using spatial indexing (R-tree) and KL-divergence matching.
+- **GPU Acceleration**: Utilizes GPU-accelerated SOGMM fitting for high-performance real-time processing, with seamless CPU fallback.
+- **Uncertainty-Aware Exploration**: Calculates component uncertainty (based on confidence or stability) to drive autonomous exploration.
+- **Topological Path Planning**: Implements a topological graph approach (`TopoTree`) to generate navigable paths towards unexplored high-uncertainty regions.
+- **Dynamic Map Management**: Efficiently manages map complexity through automatic pruning of stale features and freezing of stable, highly-observed components.
+- **Hybrid Representation**: Bridges continuous GMM representations with discrete grids for frontier detection and gradient analysis.
+- **Rich Visualization**: Provides comprehensive RViz markers for GMM ellipsoids, uncertainty maps, exploration paths, and viewpoint candidates.
 
 ## Dependencies
 
