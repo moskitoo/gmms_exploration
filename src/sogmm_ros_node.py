@@ -655,6 +655,9 @@ class SOGMMROSNode:
 
         self.fusion_weight_update = rospy.get_param("~fusion_weight_update", False)
 
+        # Output file for saving GMM on shutdown
+        self.output_file = rospy.get_param("~output_file", "gmm_output.txt")
+
         rospy.logdebug(f"OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS', 'Not set')}")
 
     def _setup_communication(self):
@@ -1427,10 +1430,45 @@ class SOGMMROSNode:
             clear_text.action = Marker.DELETE
             marker_array.markers.append(clear_text)
 
+    def save_gmm_to_file(self, filepath: str):
+        """
+        Save the master GMM to a file in the specified format.
+        Format:
+        mean: x y z
+        cov: c11 c12 c13
+        cov: c21 c22 c23
+        cov: c31 c32 c33
+        """
+        if self.master_gmm.model is None or self.master_gmm.model.n_components_ == 0:
+            rospy.logwarn("No GMM to save (model is empty)")
+            return
+        
+        try:
+            with open(filepath, 'w') as f:
+                for i in range(self.master_gmm.model.n_components_):
+                    # Extract mean (first 3 dimensions: x, y, z)
+                    mean = self.master_gmm.model.means_[i, :3]
+                    f.write(f"mean: {mean[0]:.6f} {mean[1]:.6f} {mean[2]:.6f}\n")
+                    
+                    # Extract 3x3 spatial covariance from 4x4 covariance matrix
+                    cov_4x4 = self.master_gmm.model.covariances_[i].reshape(4, 4)
+                    cov_3x3 = cov_4x4[:3, :3]
+                    
+                    # Write covariance matrix row by row
+                    for row in range(3):
+                        f.write(f"cov: {cov_3x3[row, 0]:.6f} {cov_3x3[row, 1]:.6f} {cov_3x3[row, 2]:.6f}\n")
+            
+            rospy.loginfo(f"GMM saved to {filepath} ({self.master_gmm.model.n_components_} components)")
+        except Exception as e:
+            rospy.logerr(f"Failed to save GMM to file: {e}")
+
     def shutdown_hook(self):
         """
-        Called when node is shutting down. Logs timing statistics.
+        Called when node is shutting down. Saves GMM and logs timing statistics.
         """
+        # Save GMM to file
+        self.save_gmm_to_file(self.output_file)
+        
         rospy.loginfo("="*80)
         rospy.loginfo("SOGMM Node Shutdown - Timing Statistics Summary")
         rospy.loginfo("="*80)
